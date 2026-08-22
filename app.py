@@ -1,0 +1,431 @@
+import streamlit as st
+import streamlit.components.v1 as components
+import datetime
+import io
+import requests
+from docxtpl import DocxTemplate
+
+# ==========================================
+# ⚠️ ตั้งค่า URL ที่ต้องใช้งาน 2 จุดที่นี่ค่ะ ⚠️
+# ==========================================
+# 1. URL จาก Google Apps Script (เว็บแอป)
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwnevwKC_8BWNNKPIvzQ_F2AngKpFambc4U0SFTRjo4ZY0z6tJXhwyugmwd-pMz8Tdh/exec"
+
+# 2. URL จาก Looker Studio (ฝังรายงาน)
+DASHBOARD_URL = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/g566F"
+# ==========================================
+
+# --- ฟังก์ชันช่วยเหลือ ---
+def get_thai_date(target_date):
+    thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+    return f"{target_date.day} {thai_months[target_date.month]} {target_date.year + 543}"
+
+# --- ฟังก์ชันติดต่อ Google Sheets ---
+def get_from_google_sheets(sheet_name):
+    try:
+        response = requests.get(f"{WEBHOOK_URL}?sheet_name={sheet_name}")
+        if response.status_code == 200 and response.json().get("status") == "success":
+            return response.json().get("data")
+        return []
+    except:
+        return []
+
+def save_to_google_sheets(sheet_name, row_data=None, action="append", doc_id=None, new_status=None):
+    if "script.google.com" not in WEBHOOK_URL:
+        return False, "ยังไม่ได้ใส่ WEBHOOK_URL ในโค้ด Python ค่ะ"
+        
+    payload = {"sheet_name": sheet_name, "action": action}
+    if action == "append":
+        payload["row_data"] = row_data
+    elif action == "update":
+        payload["doc_id"] = doc_id
+        payload["new_status"] = new_status
+        
+    try:
+        response = requests.post(WEBHOOK_URL, json=payload, allow_redirects=True)
+        if response.status_code == 200 and "success" in response.text:
+            return True, "Success"
+        return False, response.text
+    except Exception as e:
+        return False, str(e)
+
+
+# ==========================================
+# 🖥️ เริ่มต้นการสร้างหน้าจอแอปพลิเคชัน
+# ==========================================
+st.set_page_config(page_title="ระบบจัดการยืม-คืนยา โรงพยาบาลศรีสังวรสุโขทัย", layout="centered", page_icon="SSW_Logo.jpg")
+
+# --- โค้ดฝังฟอนต์ Sarabun, ซ่อนลายน้ำ และปรับแต่งสำหรับมือถือ ---
+# --- โค้ดฝังฟอนต์ Sarabun, ปรับขนาดโลโก้ และซ่อนลายน้ำ ---
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+    
+    /* 1. บังคับใช้ฟอนต์ Sarabun กับทุกส่วนของหน้าจอ รวมถึง Heading ทุกระดับ */
+    html, body, [class*="css"], [class*="st-"], h1, h2, h3, h4, h5, h6, span, label {
+        font-family: 'Sarabun', sans-serif !important;
+    }
+    
+    /* ซ่อนเมนูพื้นฐานของ Streamlit */
+    #MainMenu {visibility: hidden;} 
+    footer {visibility: hidden;} 
+    header {visibility: hidden;}
+
+    /* 2. ควบคุมขนาดรูปภาพใน Sidebar (จำกัดความกว้างโลโก้ไม่ให้ใหญ่เกินไป) */
+    [data-testid="stSidebar"] img {
+        max-width: 120px !important;
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    /* 📱 การปรับแต่งพิเศษสำหรับหน้าจอมือถือ */
+    @media (max-width: 768px) {
+        h1 { font-size: 26px !important; }
+        h2 { font-size: 22px !important; }
+        h3 { font-size: 18px !important; }
+        
+        .stButton>button {
+            width: 100% !important;
+            padding: 15px !important;
+            font-size: 18px !important;
+            border-radius: 10px !important;
+        }
+        
+        .block-container {
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# --- หัวข้อหลักพร้อมโลโก้โรงพยาบาล ---
+col_logo, col_title = st.columns([1, 6])
+with col_logo:
+    try:
+        st.image("SSW_Logo.jpg", width=70)
+    except:
+        pass
+with col_title:
+    st.markdown(
+        """
+        <h3 style='margin: 0; padding-top: 2px;'>ระบบจัดการยืม-คืนยา</h3>
+        <p style='margin: 0; color: #555; font-size: 18px;'>กลุ่มงานเภสัชกรรม โรงพยาบาลศรีสังวรสุโขทัย</p>
+        """, 
+        unsafe_allow_html=True
+    )
+
+st.markdown("---")
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+    
+    html, body, [class*="css"], [class*="st-"], h1, h2, h3, h4, h5, h6, span, label {
+        font-family: 'Sarabun', sans-serif !important;
+    }
+    
+    #MainMenu {visibility: hidden;} 
+    footer {visibility: hidden;} 
+    header {visibility: hidden;}
+
+    /* จัดโลโก้ใน Sidebar ให้อยู่กึ่งกลางเป๊ะๆ */
+    [data-testid="stSidebar"] [data-testid="stImage"] {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    [data-testid="stSidebar"] img {
+        max-width: 110px !important;
+        border-radius: 50%; /* เพิ่มความมนให้ดูนุ่มนวลขึ้น (ถ้าไม่ชอบลบบรรทัดนี้ออกได้ครับ) */
+    }
+
+    /* 📱 การปรับแต่งพิเศษสำหรับหน้าจอมือถือ */
+    @media (max-width: 768px) {
+        h2 { font-size: 20px !important; }
+        .stButton>button {
+            width: 100% !important;
+            padding: 15px !important;
+            font-size: 18px !important;
+            border-radius: 10px !important;
+        }
+        .block-container {
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# 1. ฐานข้อมูลเภสัชกร (สามารถเพิ่มชื่อตรงนี้ได้เรื่อยๆ ค่ะ)
+PHARMACIST_DB = {
+    "ภญ.มนรดา พิพรรธนัชกุล(INV)": "warehouse",
+    "ภญ.นันทาศิริ แก้วพันสี(INV)": "warehouse",
+    "ภญ.จตุพร สุมิตสวรรค์(INV)": "warehouse",
+    "ภญ.วัชรินทร์ ถาวโรภาส": "general",
+    "ภญ.กัณฑิมา ดาระอินทร์": "general",
+    "ภญ.มนัสนันท์ เกียรติสมบูลย์": "general",
+    "ภก.พุทธิวัฒน์ เชื้อชาติทางธกุล": "general",
+    "ภก.พัทยา สุ่มแก้ว": "general",
+    "ภญ.พลอยไพลิน ศรีม่วง": "general",
+    "ภก.ชัยพงศ์ ดำรงสุวรรณ": "general",
+    "ภญ.กาญจนา คนเที่ยง": "general",
+    "ภญ.โสมิกา คล่ำเงิน": "general",
+    "ภญ.สภาวัลย์ อภิชาติตรากูล": "general",
+    "ภก.กัมพล เกตุสุวรรณ": "general",
+    "ภก.พันธวงศ์ โรจน์ธนศิริวนิช": "general",
+    "ภญ.เบญญาศิริ รุ่งสว่าง": "general",
+    "ภก.ธีรพร เมฆพัฒน์": "general",
+    "ภญ.กมลพัชร เอื้อกุศลสมบูรณ์": "general",
+    "ภก.เสถียรพงศ์ แก้วเมธีกุล": "general",
+    "ภก.ศุภณัฐ จินดาขัด": "general",
+
+}
+
+# นำรายชื่อมาใส่ใน Dropdown
+pharmacist_names = ["เลือกชื่อ..."] + list(PHARMACIST_DB.keys())
+user_name = st.sidebar.selectbox("ผู้ทำรายการ", pharmacist_names)
+
+st.sidebar.markdown("---")
+st.sidebar.header("📌 เลือกเมนูทำงาน")
+
+# บังคับให้เลือกชื่อก่อน ถึงจะเห็นเมนู
+if user_name == "เลือกชื่อ...":
+    st.warning("⚠️ กรุณาเลือก 'ผู้ทำรายการ' ที่เมนูด้านซ้ายมือก่อนเริ่มทำงานค่ะ")
+    st.stop()
+
+# 2. ตรวจสอบสิทธิ์การเข้าถึง (ดึงสิทธิ์จากฐานข้อมูล)
+user_role = PHARMACIST_DB.get(user_name, "general")
+
+# เมนูพื้นฐานที่ทุกคนเห็น
+menu_options = [
+    "1. จ่ายยาออก (Refer รพช.)", 
+    "2. ยืมยาเข้า (ยา รพ. ไม่พอ)", 
+    "3. 📊 Dashboard สรุปข้อมูล"
+]
+
+# 3. ถ้าเป็นเภสัชคลังยา (warehouse) ให้เพิ่มเมนูที่ 4 เข้าไป
+if user_role == "warehouse":
+    menu_options.append("4. 🔄 ติดตามสถานะ (รับคืน/ส่งคืน)")
+
+# แสดงเมนูตามสิทธิ์
+menu = st.sidebar.radio("เลือกกรณีที่ต้องการ", menu_options)
+
+
+# ==========================================
+# เมนูที่ 1: จ่ายยาออก (Refer Out)
+# ==========================================
+if menu == "1. จ่ายยาออก (Refer รพช.)":
+    st.subheader("📤 กรณีที่ 1: จ่ายยาให้ผู้ป่วย Refer กลับ รพช.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        pt_name = st.text_input("ชื่อ-นามสกุล ผู้ป่วย")
+        hn = st.text_input("รหัสประจำตัวผู้ป่วย (HN)")
+        target_hosp = st.selectbox("รพช. ปลายทาง", ["ทุ่งเสลี่ยม", "ศรีสัชนาลัย", "ศรีนคร", "สวรรคโลก", "อื่นๆ"])
+    with col2:
+        date_out = st.date_input("วันที่ทำรายการ", datetime.date.today())
+        # สร้างเลขที่เอกสารอัตโนมัติจาก วัน-เวลา (เช่น REF-260822-1430)
+        auto_doc_no = f"REF-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
+        doc_no = st.text_input("เลขที่ใบยืม (สร้างอัตโนมัติ)", value=auto_doc_no, disabled=True)
+    
+    st.markdown("**รายการยา/เวชภัณฑ์ที่ให้ยืม**")
+    drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
+    
+    col3, col4, col5 = st.columns(3)
+    with col3:
+        qty = st.number_input("จำนวน", min_value=1)
+    with col4:
+        unit_choice = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น", "อื่นๆ"])
+        unit = st.text_input("ระบุหน่วย...") if unit_choice == "อื่นๆ" else unit_choice
+    with col5:
+        total_value = st.number_input("มูลค่ายารวม (บาท)", min_value=0.0)
+        
+    st.markdown("**เหตุผลความจำเป็น**")
+    reason_choice = st.radio("เลือกเหตุผล:", ["Refer Back", "ผู้ป่วยฉุกเฉิน / อุบัติเหตุ", "เหตุผลอื่นๆ ...."], horizontal=True, label_visibility="collapsed")
+    note = st.text_input("โปรดระบุเหตุผลอื่นๆ ...") if reason_choice == "เหตุผลอื่นๆ ...." else reason_choice
+        
+    st.markdown("---")
+    if st.button("💾 บันทึกข้อมูล และ สร้างใบให้ยืมยา"):
+        row_data = [doc_no, str(date_out), user_name, target_hosp, hn, drug_name, qty, unit, total_value, note, "รอคืนยา"]
+        
+        with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
+            is_saved, debug_msg = save_to_google_sheets("Outbound_Refer", row_data=row_data, action="append")
+        
+        if is_saved:
+            st.success("✅ บันทึกข้อมูลลง Google Sheets สำเร็จ!")
+            try:
+                doc_refer = DocxTemplate("template_refer_out.docx")
+                context_refer = {
+                    'target_hospital': target_hosp, 'pt_name': pt_name, 'hn': hn,
+                    'drug_details': f"{drug_name} จำนวน {qty} {unit} มูลค่า {total_value} บาท",
+                    'user_name': user_name, 'thai_date': get_thai_date(date_out)
+                }
+                doc_refer.render(context_refer)
+                bio_refer = io.BytesIO()
+                doc_refer.save(bio_refer)
+                
+                st.download_button(
+                    label="📥 โหลดใบให้ยืมยา (ส่งตัวผู้ป่วย)",
+                    data=bio_refer.getvalue(),
+                    file_name=f"ReferOut_{doc_no}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+            except Exception as e:
+                st.error(f"⚠️ เกิดข้อผิดพลาดในการสร้างเอกสาร: {e}")
+        else:
+            st.error(f"❌ ไม่สามารถบันทึกข้อมูลได้ สาเหตุ: {debug_msg}")
+
+
+# ==========================================
+# เมนูที่ 2: ยืมยาเข้า (Borrow In)
+# ==========================================
+elif menu == "2. ยืมยาเข้า (ยา รพ. ไม่พอ)":
+    st.subheader("📥 กรณีที่ 2: ยืมยาจาก รพ. อื่น (ยาขาดคลัง)")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        auto_borrow_no = f"REQ-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
+        borrow_no = st.text_input("เลขที่การยืม (สร้างอัตโนมัติ)", value=auto_borrow_no, disabled=True)
+        drug_missing = st.text_input("ชื่อยาที่ขาด/ต้องการยืม")
+        source_hosp = st.text_input("รพ. ที่เราต้องการขอยืม")
+    with col2:
+        date_req = st.date_input("วันที่แจ้งเรื่อง", datetime.date.today())
+        borrow_qty = st.number_input("จำนวนที่ต้องการยืม", min_value=1)
+    
+    col_u1, col_u2 = st.columns(2)
+    with col_u1:
+        unit_choice2 = st.selectbox("หน่วย (ยืมเข้า)", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น", "อื่นๆ"])
+    with col_u2:
+        unit2 = st.text_input("ระบุหน่วย... (ยืมเข้า)") if unit_choice2 == "อื่นๆ" else unit_choice2
+
+    st.markdown("---")
+    
+    if st.button("💾 บันทึกข้อมูลการยืมยาเข้าคลัง"):
+        row_data_in = [borrow_no, str(date_req), user_name, drug_missing, borrow_qty, unit2, source_hosp, "รอคืนยา", "-"]
+        
+        with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
+            is_saved, debug_msg = save_to_google_sheets("Inbound_Shortage", row_data=row_data_in, action="append")
+        
+        if is_saved:
+            st.success("✅ บันทึกข้อมูลกรณีรพ. ยืมยาเข้า ลง Google Sheets สำเร็จ!")
+        else:
+            st.error(f"❌ ไม่สามารถบันทึกข้อมูลได้ สาเหตุ: {debug_msg}")
+
+    st.markdown("---")
+    st.subheader("🖨️ พิมพ์เอกสารขอยืมยาเข้า รพ.")
+    col_memo, col_official = st.columns(2)
+
+    with col_memo:
+        st.info("🌙 สำหรับเภสัชกรอยู่เวร")
+        if st.button("📄 พิมพ์บันทึกข้อความ"):
+            try:
+                doc_memo = DocxTemplate("template_memo.docx")
+                context_memo = {
+                    'target_hospital': source_hosp, 'drug_details': f"{drug_missing} จำนวน {borrow_qty} {unit2}",
+                    'user_name': user_name, 'thai_date': get_thai_date(date_req)
+                }
+                doc_memo.render(context_memo)
+                bio_memo = io.BytesIO()
+                doc_memo.save(bio_memo)
+                st.download_button("📥 โหลดบันทึกข้อความ", data=bio_memo.getvalue(), file_name=f"Memo_{borrow_no}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            except Exception as e:
+                st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
+
+    with col_official:
+        st.success("☀️ สำหรับคลังยา (งานสารบรรณ)")
+        formal_reason = st.selectbox("เลือกเหตุผลในหนังสือ:", ["ยาขาดชั่วคราว จำเป็นต้องใช้เร่งด่วน", "ไม่มียาในบัญชีของโรงพยาบาล", "เป็นยา จ2 ไม่มียาในบัญชียา"])
+        if st.button("🦅 พิมพ์หนังสือตราครุฑ"):
+            try:
+                doc_official = DocxTemplate("template_official.docx")
+                context_official = {
+                    'target_hospital': source_hosp, 'reason': formal_reason,
+                    'drug_details': f"{drug_missing} จำนวน {borrow_qty} {unit2}", 'thai_date': get_thai_date(date_req)
+                }
+                doc_official.render(context_official)
+                bio_official = io.BytesIO()
+                doc_official.save(bio_official)
+                st.download_button("📥 โหลดหนังสือตราครุฑ", data=bio_official.getvalue(), file_name=f"Official_{borrow_no}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            except Exception as e:
+                st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
+
+
+# ==========================================
+# เมนูที่ 3: Dashboard สรุปข้อมูล
+# ==========================================
+elif menu == "3. Dashboard สรุปข้อมูล":
+    st.subheader("📊 Dashboard สรุปสถานะการยืม-คืนยา (Real-time)")
+    if "lookerstudio" in DASHBOARD_URL or "datastudio" in DASHBOARD_URL:
+        st.components.v1.iframe(DASHBOARD_URL, width=800, height=800, scrolling=True)
+    else:
+        st.warning("⚠️ โปรดนำ Embed URL จาก Looker Studio มาตั้งค่าที่ตัวแปร DASHBOARD_URL ในโค้ดก่อนค่ะ")
+
+
+# ==========================================
+# เมนูที่ 4: ติดตามสถานะ (รับคืน/ส่งคืน)
+# ==========================================
+elif menu == "4. 🔄 ติดตามสถานะ (รับคืน/ส่งคืน)":
+    st.subheader("🔄 จัดการสถานะการยืม-คืนยา")
+    
+    tab1, tab2 = st.tabs(["📥 รับยาคืน (Refer Out)", "📤 ส่งยาคืน รพ.อื่น (Borrow In)"])
+    
+    # ---------------- แท็บที่ 1: รับยาคืน ----------------
+    with tab1:
+        st.markdown("**รายการที่จ่ายยาออกไป และยังไม่ได้รับคืน**")
+        out_data = get_from_google_sheets("Outbound_Refer")
+        
+        if out_data and len(out_data) > 1:
+            pending_out = [row for row in out_data[1:] if len(row) > 10 and row[10] == "รอคืนยา"]
+            
+            if pending_out:
+                out_options = [f"เลขที่: {row[0]} | รพ: {row[3]} | ยา: {row[5]} ({row[6]} {row[7]})" for row in pending_out]
+                selected_out = st.selectbox("เลือกรายการที่ รพช. ส่งยามาคืนแล้ว:", ["-- เลือกรายการ --"] + out_options)
+                
+                if selected_out != "-- เลือกรายการ --":
+                    doc_id = selected_out.split(" | ")[0].replace("เลขที่: ", "")
+                    if st.button("✅ ยืนยันการรับยาคืนเข้าสต๊อก"):
+                        with st.spinner("กำลังอัปเดตฐานข้อมูล..."):
+                            is_saved, msg = save_to_google_sheets("Outbound_Refer", action="update", doc_id=doc_id, new_status="รับคืนแล้ว")
+                            if is_saved:
+                                st.success(f"🎉 อัปเดตสถานะ {doc_id} เป็น 'รับคืนแล้ว' สำเร็จ!")
+                                st.rerun() 
+                            else:
+                                st.error(f"❌ ผิดพลาด: {msg}")
+            else:
+                st.info("✨ ไม่มีรายการยารอรับคืนค่ะ")
+        else:
+            st.warning("กำลังโหลดข้อมูล หรือยังไม่มีข้อมูลในระบบ")
+
+    # ---------------- แท็บที่ 2: ส่งยาคืน ----------------
+    with tab2:
+        st.markdown("**รายการที่เรายืมยามา และยังไม่ได้ส่งคืน**")
+        in_data = get_from_google_sheets("Inbound_Shortage")
+        
+        if in_data and len(in_data) > 1:
+            pending_in = [row for row in in_data[1:] if len(row) > 7 and row[7] == "รอคืนยา"]
+            
+            if pending_in:
+                in_options = [f"เลขที่: {row[0]} | ยืมจาก: {row[6]} | ยา: {row[3]} ({row[4]} {row[5]})" for row in pending_in]
+                selected_in = st.selectbox("เลือกรายการที่เราส่งยาคืน รพ. ต้นทางแล้ว:", ["-- เลือกรายการ --"] + in_options)
+                
+                if selected_in != "-- เลือกรายการ --":
+                    doc_id = selected_in.split(" | ")[0].replace("เลขที่: ", "")
+                    if st.button("✅ ยืนยันการส่งยาคืน รพ. ต้นทาง"):
+                        with st.spinner("กำลังอัปเดตฐานข้อมูล..."):
+                            is_saved, msg = save_to_google_sheets("Inbound_Shortage", action="update", doc_id=doc_id, new_status="ส่งคืนแล้ว")
+                            if is_saved:
+                                st.success(f"🎉 อัปเดตสถานะ {doc_id} เป็น 'ส่งคืนแล้ว' สำเร็จ!")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ ผิดพลาด: {msg}")
+            else:
+                st.info("✨ ไม่มีรายการยารอส่งคืนค่ะ")
+        else:
+            st.warning("กำลังโหลดข้อมูล หรือยังไม่มีข้อมูลในระบบ")
