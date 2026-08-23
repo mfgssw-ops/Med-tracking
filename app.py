@@ -212,16 +212,18 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
         doc_no = st.text_input("เลขที่ใบยืม (สร้างอัตโนมัติ)", value=auto_doc_no, disabled=True)
     
     st.markdown("**รายการยา/เวชภัณฑ์ที่ให้ยืม**")
-    drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
     
-    col3, col4, col5 = st.columns(3)
-    with col3:
+    # ปรับให้ช่องชื่อยา จำนวน และหน่วย อยู่ติดกัน
+    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+    with col_d1:
+        drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
+    with col_d2:
         qty = st.number_input("จำนวน", min_value=1)
-    with col4:
-        unit_choice = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น", "อื่นๆ"])
+    with col_d3:
+        # เพิ่ม แกลลอน ในตัวเลือก
+        unit_choice = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"])
+        # ถ้าเลือกอื่นๆ จะมีช่องกรอกโผล่มาตรงนี้เลย
         unit = st.text_input("ระบุหน่วย...") if unit_choice == "อื่นๆ" else unit_choice
-    with col5:
-        total_value = st.number_input("มูลค่ายารวม (บาท)", min_value=0.0)
         
     st.markdown("**เหตุผลความจำเป็น**")
     reason_choice = st.radio("เลือกเหตุผล:", ["Refer Back", "ผู้ป่วยฉุกเฉิน / อุบัติเหตุ", "เหตุผลอื่นๆ ...."], horizontal=True, label_visibility="collapsed")
@@ -229,7 +231,8 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
         
     st.markdown("---")
     if st.button("💾 บันทึกข้อมูล และ สร้างใบให้ยืมยา"):
-        row_data = [doc_no, str(date_out), user_name, target_hosp, hn, drug_name, qty, unit, total_value, note, "รอคืนยา"]
+        # แทนที่ total_value เดิมด้วย "-" เพื่อรักษารูปแบบคอลัมน์ใน Google Sheets ไว้
+        row_data = [doc_no, str(date_out), user_name, target_hosp, hn, drug_name, qty, unit, "-", note, "รอคืนยา"]
         
         with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
             is_saved, debug_msg = save_to_google_sheets("Outbound_Refer", row_data=row_data, action="append")
@@ -240,7 +243,8 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
                 doc_refer = DocxTemplate("template_refer_out.docx")
                 context_refer = {
                     'target_hospital': target_hosp, 'pt_name': pt_name, 'hn': hn,
-                    'drug_details': f"{drug_name} จำนวน {qty} {unit} มูลค่า {total_value} บาท",
+                    # เอาส่วนแสดงราคาออก เหลือแค่ ชื่อยา จำนวน หน่วย
+                    'drug_details': f"{drug_name} จำนวน {qty} {unit}",
                     'user_name': user_name, 'thai_date': get_thai_date(date_out)
                 }
                 doc_refer.render(context_refer)
@@ -269,16 +273,21 @@ elif menu == "2. ยืมยาเข้า (ยา รพ. เราไม่�
     with col1:
         auto_borrow_no = f"REQ-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
         borrow_no = st.text_input("เลขที่การยืม (สร้างอัตโนมัติ)", value=auto_borrow_no, disabled=True)
-        drug_missing = st.text_input("ชื่อยาที่ขาด/ต้องการยืม")
         source_hosp = st.text_input("รพ. ที่เราต้องการขอยืม")
     with col2:
         date_req = st.date_input("วันที่แจ้งเรื่อง", datetime.date.today())
-        borrow_qty = st.number_input("จำนวนที่ต้องการยืม", min_value=1)
     
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        unit_choice2 = st.selectbox("หน่วย (ยืมเข้า)", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น", "อื่นๆ"])
-    with col_u2:
+    # จัดกลุ่มให้ ชื่อยา, จำนวน, และหน่วย เรียงต่อกัน
+    st.markdown("**รายการยาที่ต้องการยืม**")
+    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+    with col_d1:
+        drug_missing = st.text_input("ชื่อยาที่ขาด/ต้องการยืม")
+    with col_d2:
+        borrow_qty = st.number_input("จำนวนที่ต้องการยืม", min_value=1)
+    with col_d3:
+        # เพิ่ม แกลลอน ในตัวเลือก
+        unit_choice2 = st.selectbox("หน่วย (ยืมเข้า)", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"])
+        # ถ้าเลือกอื่นๆ ช่องกรอกจะปรากฏในคอลัมน์เดียวกัน
         unit2 = st.text_input("ระบุหน่วย... (ยืมเข้า)") if unit_choice2 == "อื่นๆ" else unit_choice2
 
     st.markdown("---")
@@ -331,7 +340,6 @@ elif menu == "2. ยืมยาเข้า (ยา รพ. เราไม่�
             except Exception as e:
                 st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
 
-
 # ==========================================
 # เมนูที่ 3: ให้ รพ.อื่นยืมยา (Lend Out)
 # ==========================================
@@ -350,7 +358,7 @@ elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อ
     
     col_u1, col_u2 = st.columns(2)
     with col_u1:
-        unit_choice_lend = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น", "อื่นๆ"], key="unit_lend_select")
+        unit_choice_lend = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น","แกลลอน", "อื่นๆ"], key="unit_lend_select")
     with col_u2:
         unit_lend = st.text_input("ระบุหน่วย...") if unit_choice_lend == "อื่นๆ" else unit_choice_lend
 
