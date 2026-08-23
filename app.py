@@ -414,28 +414,73 @@ elif menu == "5. 🔄 ติดตามสถานะคลังยา (Admin
         else:
             st.warning("กำลังโหลดข้อมูล หรือยังไม่มีข้อมูลในระบบ")
 
-    # ---------------- แท็บที่ 2: ส่งยาคืน ----------------
+    # ---------------- แท็บที่ 2: ส่งยาคืน (เรายืมเขา) ----------------
     with tab2:
-        st.markdown("**รายการที่เรายืมยามา และยังไม่ได้ส่งคืน**")
+        st.markdown("**รายการที่เรายืมยามา และยังไม่ได้ส่งคืน (พิมพ์ใบคืนยา)**")
         in_data = get_from_google_sheets("Inbound_Shortage")
         
         if in_data and len(in_data) > 1:
+            # ค้นหารายการที่สถานะเป็น "รอคืนยา"
             pending_in = [row for row in in_data[1:] if len(row) > 7 and row[7] == "รอคืนยา"]
             
             if pending_in:
-                in_options = [f"เลขที่: {row[0]} | ยืมจาก: {row[6]} | ยา: {row[3]} ({row[4]} {row[5]})" for row in pending_in]
-                selected_in = st.selectbox("เลือกรายการที่เราส่งยาคืน รพ. ต้นทางแล้ว:", ["-- เลือกรายการ --"] + in_options)
+                # 1. ดึงรายชื่อ รพ. ทั้งหมดที่มีค้างคืน (เพื่อจัดกลุ่มการส่งหนังสือ)
+                hospitals = list(set([row[6] for row in pending_in]))
+                selected_hosp = st.selectbox("1. เลือกโรงพยาบาลที่จะส่งยาคืน:", ["-- เลือกโรงพยาบาล --"] + hospitals)
                 
-                if selected_in != "-- เลือกรายการ --":
-                    doc_id = selected_in.split(" | ")[0].replace("เลขที่: ", "")
-                    if st.button("✅ ยืนยันการส่งยาคืน รพ. ต้นทาง"):
-                        with st.spinner("กำลังอัปเดตฐานข้อมูล..."):
-                            is_saved, msg = save_to_google_sheets("Inbound_Shortage", action="update", doc_id=doc_id, new_status="ส่งคืนแล้ว")
-                            if is_saved:
-                                st.success(f"🎉 อัปเดตสถานะ {doc_id} เป็น 'ส่งคืนแล้ว' สำเร็จ!")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ ผิดพลาด: {msg}")
+                if selected_hosp != "-- เลือกโรงพยาบาล --":
+                    # 2. กรองเฉพาะรายการของ รพ. ที่เลือก
+                    hosp_items = [row for row in pending_in if row[6] == selected_hosp]
+                    
+                    # 3. ให้เลือกรายการยา (เลือกได้หลายรายการ)
+                    item_options = [f"เลขที่: {row[0]} | ยา: {row[3]} ({row[4]} {row[5]})" for row in hosp_items]
+                    selected_items = st.multiselect("2. เลือกรายการยาที่ต้องการส่งคืน (เลือกได้มากกว่า 1 รายการ):", item_options)
+                    
+                    if selected_items:
+                        st.info(f"✨ จำนวนรายการที่เลือก: {len(selected_items)} รายการ")
+                        
+                        if st.button("✅ ยืนยันการส่งยาคืน และ สร้างหนังสือขอคืนยา"):
+                            success_count = 0
+                            drug_details_list = []
+                            
+                            with st.spinner("กำลังอัปเดตฐานข้อมูล และสร้างเอกสาร..."):
+                                for idx, item_str in enumerate(selected_items):
+                                    # แกะข้อมูลออกจากตัวเลือกที่กด
+                                    doc_id = item_str.split(" | ")[0].replace("เลขที่: ", "")
+                                    drug_info = item_str.split(" | ")[1].replace("ยา: ", "")
+                                    
+                                    # อัปเดตสถานะใน Sheet เป็น 'ส่งคืนแล้ว'
+                                    is_saved, msg = save_to_google_sheets("Inbound_Shortage", action="update", doc_id=doc_id, new_status="ส่งคืนแล้ว")
+                                    if is_saved:
+                                        success_count += 1
+                                        # จัดฟอร์แมตข้อความรายการยาที่จะไปใส่ใน Word
+                                        drug_details_list.append(f"\t\t{idx+1}. {drug_info} (อ้างอิงใบยืม: {doc_id})")
+                                    else:
+                                        st.error(f"❌ ผิดพลาดในการอัปเดต {doc_id}: {msg}")
+                                        
+                            if success_count == len(selected_items):
+                                st.success(f"🎉 อัปเดตสถานะเป็น 'ส่งคืนแล้ว' สำเร็จทั้ง {success_count} รายการ!")
+                                
+                                # สร้างเอกสาร Word อัตโนมัติรวมทุกรายการที่เลือก
+                                drug_details_str = "\n".join(drug_details_list)
+                                try:
+                                    doc_return = DocxTemplate("template_return_official.docx")
+                                    context_return = {
+                                        'target_hospital': selected_hosp,
+                                        'drug_details': drug_details_str
+                                    }
+                                    doc_return.render(context_return)
+                                    bio_return = io.BytesIO()
+                                    doc_return.save(bio_return)
+                                    
+                                    st.download_button(
+                                        label="📥 โหลดหนังสือขอคืนยา (ตราครุฑ)",
+                                        data=bio_return.getvalue(),
+                                        file_name=f"Return_Official_{selected_hosp}_{datetime.datetime.now().strftime('%y%m%d')}.docx",
+                                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                    )
+                                except Exception as e:
+                                    st.error(f"⚠️ เกิดข้อผิดพลาดในการสร้างเอกสาร: {e}\n(กรุณาตรวจสอบว่ามีไฟล์ template_return_official.docx อยู่ในโฟลเดอร์เดียวกัน)")
             else:
                 st.info("✨ ไม่มีรายการยารอส่งคืนค่ะ")
         else:
