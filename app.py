@@ -353,9 +353,9 @@ elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อ
         target_hosp_lend = st.text_input("ชื่อ รพ. ที่มายืมยา")
         drug_lended = st.text_input("ชื่อยา หรือ เวชภัณฑ์ที่ให้ยืม")
     with col2:
-        date_lend = st.date_input("วันที่ให้ยืม", datetime.date.today())
         lend_qty = st.number_input("จำนวนที่ให้ยืม", min_value=1, key="lend_qty")
-    
+        date_lend = st.date_input("วันที่ให้ยืม", datetime.date.today())
+        
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         unit_choice_lend = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น","แกลลอน", "อื่นๆ"], key="unit_lend_select")
@@ -386,9 +386,9 @@ elif menu == "4. 📊 Dashboard สรุปข้อมูล":
     st.info("💡 **ข้อแนะนำ:** หากข้อมูลในตารางยังไม่อัปเดต ให้กดปุ่ม **'🔄 อัปเดตข้อมูลล่าสุด'** ที่อยู่ในหน้า Dashboard ได้เลยค่ะ")
     
     # ⚠️ นำลิงก์ Embed ของแต่ละหน้าจาก Looker Studio มาใส่ตรงนี้ (อย่าลืมเติม embed/ นะคะ)
-    URL_REFER_OUT = "https://lookerstudio.google.com/embed/reporting/....."
-    URL_BORROW_IN = "https://lookerstudio.google.com/embed/reporting/....."
-    URL_LEND_OUT  = "https://lookerstudio.google.com/embed/reporting/....."
+    URL_REFER_OUT = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/g566F"
+    URL_BORROW_IN = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/p_7tlqc5pq6d"
+    URL_LEND_OUT  = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/p_rq3f76pq6d"
     
     # สร้าง Tabs เพื่อแยกหน้า Dashboard ให้ดูง่าย
     dash_tab1, dash_tab2, dash_tab3 = st.tabs(["📤 จ่ายยาออก (Refer Out)", "📥 เรายืม รพ.อื่น (Borrow In)", "🤝 รพ.อื่นยืมเรา (Lend Out)"])
