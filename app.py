@@ -346,20 +346,28 @@ elif menu == "2. ยืมยาเข้า (ยา รพ. เราไม่�
 elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อื่นขาด)":
     st.subheader("📤 กรณีที่ 3: ให้ รพ.อื่นยืมยา (ยา รพ.อื่นขาดคลัง)")
     
+    # --- แถวที่ 1: เลขที่ให้ยืม และ วันที่ ---
     col1, col2 = st.columns(2)
     with col1:
         auto_lend_no = f"LEND-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
         lend_no = st.text_input("เลขที่การให้ยืม (สร้างอัตโนมัติ)", value=auto_lend_no, disabled=True)
-        target_hosp_lend = st.text_input("ชื่อ รพ. ที่มายืมยา")
-        drug_lended = st.text_input("ชื่อยา หรือ เวชภัณฑ์ที่ให้ยืม")
     with col2:
-        lend_qty = st.number_input("จำนวนที่ให้ยืม", min_value=1, key="lend_qty")
         date_lend = st.date_input("วันที่ให้ยืม", datetime.date.today())
         
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        unit_choice_lend = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "set", "ชิ้น","แกลลอน", "อื่นๆ"], key="unit_lend_select")
-    with col_u2:
+    # --- แถวที่ 2: รพ. ที่มายืมยา ---
+    target_hosp_lend = st.text_input("ชื่อ รพ. ที่มายืมยา")
+    
+    # --- แถวที่ 3: รายการยา จำนวน และหน่วย (เรียงติดกัน) ---
+    st.markdown("**รายการยาที่ให้ยืม**")
+    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+    
+    with col_d1:
+        drug_lended = st.text_input("ชื่อยา หรือ เวชภัณฑ์ที่ให้ยืม")
+    with col_d2:
+        lend_qty = st.number_input("จำนวนที่ให้ยืม", min_value=1, key="lend_qty")
+    with col_d3:
+        # เพิ่ม 'แกลลอน' เข้าไปในตัวเลือกด้วย เพื่อให้สอดคล้องกับเมนูอื่น
+        unit_choice_lend = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"], key="unit_lend_select")
         unit_lend = st.text_input("ระบุหน่วย...") if unit_choice_lend == "อื่นๆ" else unit_choice_lend
 
     st.markdown("---")
@@ -374,7 +382,6 @@ elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อ
             st.success(f"✅ บันทึกข้อมูลสำเร็จ! (รพ.{target_hosp_lend} ยืม {drug_lended} จำนวน {lend_qty} {unit_lend})")
         else:
             st.error(f"❌ ไม่สามารถบันทึกข้อมูลได้ สาเหตุ: {debug_msg}")
-
 
 # ==========================================
 # เมนูที่ 4: Dashboard สรุปข้อมูล
