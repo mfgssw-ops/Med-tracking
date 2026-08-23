@@ -380,14 +380,17 @@ elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อ
 # เมนูที่ 4: Dashboard สรุปข้อมูล
 # ==========================================
 elif menu == "4. 📊 Dashboard สรุปข้อมูล":
-    st.subheader("📊 Dashboard สรุปสถานะการยืม-คืนยา (Real-time)")
+    st.subheader("📊 Dashboard สรุปสถานะการยืม-คืนยา")
     
-    # ⚠️ นำลิงก์ Embed ของแต่ละหน้าจาก Looker Studio มาใส่ตรงนี้
-    URL_REFER_OUT = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/g566F"
-    URL_BORROW_IN = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/p_7tlqc5pq6d"
-    URL_LEND_OUT = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/p_rq3f76pq6d"
+    # ✨ เพิ่มข้อความแจ้งเตือนผู้ใช้งานตรงนี้
+    st.info("💡 **ข้อแนะนำ:** หากข้อมูลในตารางยังไม่อัปเดต ให้กดปุ่ม **'🔄 อัปเดตข้อมูลล่าสุด'** ที่อยู่ในหน้า Dashboard ได้เลยค่ะ")
     
-    # สร้าง Tabs
+    # ⚠️ นำลิงก์ Embed ของแต่ละหน้าจาก Looker Studio มาใส่ตรงนี้ (อย่าลืมเติม embed/ นะคะ)
+    URL_REFER_OUT = "https://lookerstudio.google.com/embed/reporting/....."
+    URL_BORROW_IN = "https://lookerstudio.google.com/embed/reporting/....."
+    URL_LEND_OUT  = "https://lookerstudio.google.com/embed/reporting/....."
+    
+    # สร้าง Tabs เพื่อแยกหน้า Dashboard ให้ดูง่าย
     dash_tab1, dash_tab2, dash_tab3 = st.tabs(["📤 จ่ายยาออก (Refer Out)", "📥 เรายืม รพ.อื่น (Borrow In)", "🤝 รพ.อื่นยืมเรา (Lend Out)"])
     
     with dash_tab1:
@@ -398,7 +401,6 @@ elif menu == "4. 📊 Dashboard สรุปข้อมูล":
         
     with dash_tab3:
         st.components.v1.iframe(URL_LEND_OUT, width=800, height=700, scrolling=True)
-
 
 # ==========================================
 # เมนูที่ 5: ติดตามสถานะ (รับคืน/ส่งคืน) - เฉพาะ Admin
