@@ -381,10 +381,23 @@ elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อ
 # ==========================================
 elif menu == "4. 📊 Dashboard สรุปข้อมูล":
     st.subheader("📊 Dashboard สรุปสถานะการยืม-คืนยา (Real-time)")
-    if "lookerstudio" in DASHBOARD_URL or "datastudio" in DASHBOARD_URL:
-        st.components.v1.iframe(DASHBOARD_URL, width=800, height=800, scrolling=True)
-    else:
-        st.warning("⚠️ โปรดนำ Embed URL จาก Looker Studio มาตั้งค่าที่ตัวแปร DASHBOARD_URL ในโค้ดก่อนค่ะ")
+    
+    # ⚠️ นำลิงก์ Embed ของแต่ละหน้าจาก Looker Studio มาใส่ตรงนี้
+    URL_REFER_OUT = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/g566F"
+    URL_BORROW_IN = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/p_7tlqc5pq6d"
+    URL_LEND_OUT = "https://datastudio.google.com/embed/reporting/eb15729f-a596-4adc-bb19-b28269e6838d/page/p_rq3f76pq6d"
+    
+    # สร้าง Tabs
+    dash_tab1, dash_tab2, dash_tab3 = st.tabs(["📤 จ่ายยาออก (Refer Out)", "📥 เรายืม รพ.อื่น (Borrow In)", "🤝 รพ.อื่นยืมเรา (Lend Out)"])
+    
+    with dash_tab1:
+        st.components.v1.iframe(URL_REFER_OUT, width=800, height=700, scrolling=True)
+        
+    with dash_tab2:
+        st.components.v1.iframe(URL_BORROW_IN, width=800, height=700, scrolling=True)
+        
+    with dash_tab3:
+        st.components.v1.iframe(URL_LEND_OUT, width=800, height=700, scrolling=True)
 
 
 # ==========================================
