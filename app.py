@@ -3,6 +3,9 @@ import streamlit.components.v1 as components
 import datetime
 import io
 import requests
+import hashlib
+import hmac
+import secrets
 from docxtpl import DocxTemplate
 from docx import Document
 from docx.oxml import OxmlElement
@@ -57,7 +60,7 @@ def drug_details_text(items, opd_mode=False):
     for idx, item in enumerate(items, start=1):
         if opd_mode:
             lines.append(
-                f"{idx}. {item['drug_name']} - จ่ายผู้ป่วย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
+                f"{idx}. {item['drug_name']} - จ่ายให้ 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
                 f"/ รพ.ปลายทางทำยืม {format_qty(item['borrow_qty'])} {item['unit']}"
             )
         else:
@@ -132,7 +135,7 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
     if opd_mode:
         # คอลัมน์สุดท้ายช่วยตรวจสอบได้ทันทีว่า 3 วันที่ รพ.เราจ่าย + ส่วนที่ รพ.ปลายทางยืม
         # รวมแล้วตรงกับจำนวนยาที่ผู้ป่วยต้องใช้ทั้งหมดหรือไม่
-        headers = ["ลำดับ", "รายการยา", "จ่ายผู้ป่วย\n3 วัน", "รพ.ปลายทาง\nขอยืม", "รวมที่ต้องใช้"]
+        headers = ["ลำดับ", "รายการยา", "จ่าย 3 วัน", "แจ้งทำเรื่องขอยืม", "รวมที่ต้องใช้"]
         rows = []
         for idx, item in enumerate(items, start=1):
             qty_3day = float(item["qty_3day"])
@@ -205,6 +208,106 @@ def save_to_google_sheets(sheet_name, row_data=None, action="append", doc_id=Non
         return False, response.text
     except Exception as e:
         return False, str(e)
+
+
+# ==========================================
+# 🔐 ระบบรหัสผ่านรายบุคคลสำหรับเจ้าหน้าที่คลังยา
+# ==========================================
+# ต้องมีชีตชื่อ Admin_Passwords ใน Google Sheets เดียวกับฐานข้อมูล
+# แนะนำหัวคอลัมน์แถวแรก: user_name | salt | password_hash | created_at
+# ระบบจะเก็บเฉพาะ salt + hash ไม่เก็บรหัสผ่านจริง
+ADMIN_PASSWORD_SHEET = "Admin_Passwords"
+PASSWORD_ITERATIONS = 310_000
+
+def _hash_password(password, salt_hex):
+    salt = bytes.fromhex(salt_hex)
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PASSWORD_ITERATIONS,
+    ).hex()
+
+PASSWORD_RESET_MARKER = "__RESET__"
+SYSTEM_ADMIN_SECRET_KEY = "SYSTEM_ADMIN_PASSWORD"
+
+
+def get_latest_admin_credential(user_name):
+    """อ่าน credential ล่าสุดของเจ้าหน้าที่คลังจาก Google Sheets
+
+    ถ้า record ล่าสุดเป็น RESET marker จะถือว่าบัญชีนั้นยังไม่มีรหัสผ่าน
+    และให้เจ้าของบัญชีตั้งรหัสใหม่ในการเข้าใช้งานครั้งถัดไป
+    """
+    rows = get_from_google_sheets(ADMIN_PASSWORD_SHEET)
+    if not rows:
+        return None
+
+    # ใช้ record ล่าสุดของผู้ใช้นั้นเท่านั้น เพื่อไม่ย้อนกลับไปใช้รหัสเก่าหลังถูก reset
+    for row in reversed(rows):
+        if len(row) >= 1 and str(row[0]).strip() == user_name:
+            salt_hex = str(row[1]).strip() if len(row) > 1 else ""
+            password_hash = str(row[2]).strip() if len(row) > 2 else ""
+
+            if salt_hex == PASSWORD_RESET_MARKER or password_hash == PASSWORD_RESET_MARKER:
+                return None
+
+            if salt_hex and password_hash:
+                return {"salt": salt_hex, "password_hash": password_hash}
+
+            # หาก record ล่าสุดของผู้ใช้นี้ไม่สมบูรณ์ ให้ถือว่าไม่มี credential
+            # เพื่อไม่เผลอย้อนกลับไปยอมรับรหัสเก่า
+            return None
+    return None
+
+def verify_admin_password(user_name, password):
+    credential = get_latest_admin_credential(user_name)
+    if not credential:
+        return False
+    try:
+        candidate_hash = _hash_password(password, credential["salt"])
+        return hmac.compare_digest(candidate_hash, credential["password_hash"])
+    except (ValueError, TypeError):
+        return False
+
+def set_admin_password(user_name, new_password):
+    """บันทึกรหัสใหม่แบบ hash ลง Google Sheets โดยไม่ส่งรหัสจริงไปเก็บ"""
+    salt_hex = secrets.token_hex(16)
+    password_hash = _hash_password(new_password, salt_hex)
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    return save_to_google_sheets(
+        ADMIN_PASSWORD_SHEET,
+        row_data=[user_name, salt_hex, password_hash, timestamp],
+        action="append",
+    )
+
+def password_is_valid(password):
+    # ตั้งขั้นต่ำไม่ยาวเกินไปเพื่อให้ใช้งานจริงสะดวก แต่ไม่อนุญาตรหัสสั้นมาก
+    return len(password) >= 6
+
+
+def get_system_admin_password():
+    """อ่านรหัส System Admin จาก Streamlit Secrets โดยไม่เขียนรหัสไว้ใน source code"""
+    try:
+        return str(st.secrets[SYSTEM_ADMIN_SECRET_KEY])
+    except Exception:
+        return ""
+
+
+def verify_system_admin_password(password):
+    configured_password = get_system_admin_password()
+    if not configured_password:
+        return False
+    return hmac.compare_digest(str(password), configured_password)
+
+
+def reset_warehouse_password(user_name):
+    """รีเซ็ตรหัสเจ้าหน้าที่คลังโดยบันทึก reset marker แทนการลบประวัติเดิม"""
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    return save_to_google_sheets(
+        ADMIN_PASSWORD_SHEET,
+        row_data=[user_name, PASSWORD_RESET_MARKER, PASSWORD_RESET_MARKER, timestamp],
+        action="append",
+    )
 
 
 # ==========================================
@@ -303,7 +406,110 @@ PHARMACIST_DB = {
     "ภก.ศุภณัฐ จินดาขัด": "general",
 }
 
-# นำรายชื่อมาใส่ใน Dropdown
+# ==========================================
+# 🔐 เลือกโหมดเข้าสู่ระบบ: ผู้ปฏิบัติงาน / System Admin
+# ==========================================
+login_mode = st.sidebar.radio(
+    "โหมดเข้าสู่ระบบ",
+    ["👩‍⚕️ ผู้ปฏิบัติงาน", "🛠️ System Admin"],
+    key="login_mode",
+)
+
+# System Admin เป็นบัญชีของผู้พัฒนา/ผู้ดูแลโปรแกรม แยกจากเภสัชกรคลังยา
+# ใช้เฉพาะจัดการ credential เช่น reset รหัสผ่าน ไม่ใช้ทำรายการยา
+if login_mode == "🛠️ System Admin":
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🛠️ ผู้ดูแลระบบ (System Admin)**")
+
+    configured_system_admin_password = get_system_admin_password()
+    if not configured_system_admin_password:
+        st.error(
+            "⚠️ ยังไม่ได้ตั้งรหัส System Admin ใน Streamlit Secrets "
+            "กรุณาเพิ่มค่า SYSTEM_ADMIN_PASSWORD ก่อนใช้งานเมนูนี้"
+        )
+        st.code('SYSTEM_ADMIN_PASSWORD = "ใส่รหัสที่คุณตั้งเองตรงนี้"', language="toml")
+        st.caption(
+            "รหัสนี้จะไม่ถูกเขียนไว้ใน app.py และไม่ถูกเก็บใน Google Sheets"
+        )
+        st.stop()
+
+    system_admin_authenticated = st.session_state.get("system_admin_authenticated", False)
+
+    if not system_admin_authenticated:
+        system_admin_password = st.sidebar.text_input(
+            "รหัส System Admin",
+            type="password",
+            key="system_admin_password_input",
+        )
+        if st.sidebar.button("🔓 เข้าสู่ System Admin", key="system_admin_login_btn"):
+            if verify_system_admin_password(system_admin_password):
+                st.session_state["system_admin_authenticated"] = True
+                st.rerun()
+            else:
+                st.sidebar.error("❌ รหัส System Admin ไม่ถูกต้อง")
+        st.stop()
+
+    st.sidebar.success("✅ เข้าสู่ระบบ System Admin")
+    if st.sidebar.button("🚪 ออกจาก System Admin", key="system_admin_logout_btn"):
+        st.session_state.pop("system_admin_authenticated", None)
+        st.rerun()
+
+    st.subheader("🛠️ จัดการบัญชีเจ้าหน้าที่คลังยา")
+    st.info(
+        "System Admin ใช้สำหรับดูสถานะบัญชีและรีเซ็ตรหัสผ่านของเจ้าหน้าที่คลังยาเท่านั้น "
+        "ไม่ใช้ทำรายการยาหรือจัดการสถานะยืม-คืนแทนเจ้าหน้าที่คลัง"
+    )
+
+    warehouse_users = [
+        name for name, role in PHARMACIST_DB.items() if role == "warehouse"
+    ]
+    selected_warehouse_user = st.selectbox(
+        "เลือกเจ้าหน้าที่คลังยาที่ต้องการจัดการ",
+        warehouse_users,
+        key="system_admin_selected_warehouse",
+    )
+
+    selected_credential = get_latest_admin_credential(selected_warehouse_user)
+    if selected_credential:
+        st.success(f"✅ {selected_warehouse_user} มีรหัสผ่านสำหรับเข้าใช้งานแล้ว")
+    else:
+        st.warning(
+            f"⚠️ {selected_warehouse_user} ยังไม่ได้ตั้งรหัสผ่าน หรือบัญชีถูกรีเซ็ตแล้ว"
+        )
+
+    st.markdown("#### รีเซ็ตรหัสผ่าน")
+    st.write(
+        "เมื่อรีเซ็ตแล้ว ระบบจะไม่เปิดเผยหรือกู้รหัสเดิม "
+        "เจ้าหน้าที่คนนี้จะต้องตั้งรหัสผ่านใหม่ด้วยตนเองเมื่อเข้าใช้งานครั้งถัดไป"
+    )
+    confirm_reset = st.checkbox(
+        f"ยืนยันว่าต้องการรีเซ็ตรหัสของ {selected_warehouse_user}",
+        key="system_admin_confirm_reset",
+    )
+
+    if st.button(
+        "🔄 รีเซ็ตรหัสผ่านเจ้าหน้าที่คลัง",
+        disabled=not confirm_reset,
+        type="primary",
+        key="system_admin_reset_btn",
+    ):
+        ok, msg = reset_warehouse_password(selected_warehouse_user)
+        if ok:
+            # ถ้า System Admin กับเจ้าหน้าที่คลังเปิดอยู่ใน session เดียวกัน ให้บังคับ login ใหม่
+            st.session_state.pop(
+                f"warehouse_authenticated::{selected_warehouse_user}", None
+            )
+            st.success(
+                f"รีเซ็ตรหัสของ {selected_warehouse_user} สำเร็จ "
+                "ครั้งถัดไปเจ้าหน้าที่จะต้องตั้งรหัสใหม่"
+            )
+            st.rerun()
+        else:
+            st.error(f"ไม่สามารถรีเซ็ตรหัสผ่านได้: {msg}")
+
+    st.stop()
+
+# --- โหมดผู้ปฏิบัติงาน ---
 pharmacist_names = ["เลือกชื่อ..."] + list(PHARMACIST_DB.keys())
 user_name = st.sidebar.selectbox("ผู้ทำรายการ", pharmacist_names)
 
@@ -320,19 +526,109 @@ user_role = PHARMACIST_DB.get(user_name, "general")
 
 st.sidebar.markdown("---")
 # ==========================================
-# 🔐 ระบบ Security แบ่งสิทธิ์ User / Admin
+# 🔐 ระบบ Security — รหัสผ่านเฉพาะเจ้าหน้าที่คลังยา
 # ==========================================
+warehouse_authenticated = False
+
 if user_role == "warehouse":
-    st.sidebar.markdown("**🔐 ยืนยันตัวตน (Admin คลังยา)**")
-    admin_password = st.sidebar.text_input("รหัสผ่าน Admin", type="password")
-    
-    # รหัสผ่านเริ่มต้นคือ 1234
-    if admin_password != "1234":
-        st.sidebar.error("❌ รหัสผ่านไม่ถูกต้อง (สิทธิ์การเข้าถึงถูกจำกัด)")
+    st.sidebar.markdown("**🔐 ยืนยันตัวตน (เจ้าหน้าที่คลังยา)**")
+
+    auth_state_key = f"warehouse_authenticated::{user_name}"
+    credential = get_latest_admin_credential(user_name)
+
+    # --- ครั้งแรก: ให้เจ้าหน้าที่คลังยาตั้งรหัสผ่านของตัวเอง ---
+    if credential is None:
+        st.sidebar.info("บัญชีนี้ยังไม่ได้ตั้งรหัสผ่าน กรุณาตั้งรหัสผ่านสำหรับใช้งานครั้งแรก")
+        new_password = st.sidebar.text_input(
+            "ตั้งรหัสผ่านใหม่",
+            type="password",
+            key=f"setup_password::{user_name}",
+            help="อย่างน้อย 6 ตัวอักษร",
+        )
+        confirm_password = st.sidebar.text_input(
+            "ยืนยันรหัสผ่านใหม่",
+            type="password",
+            key=f"setup_password_confirm::{user_name}",
+        )
+
+        if st.sidebar.button("✅ ตั้งรหัสผ่าน", key=f"setup_password_btn::{user_name}"):
+            if not password_is_valid(new_password):
+                st.sidebar.error("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร")
+            elif new_password != confirm_password:
+                st.sidebar.error("รหัสผ่านทั้งสองช่องไม่ตรงกัน")
+            else:
+                ok, msg = set_admin_password(user_name, new_password)
+                if ok:
+                    st.session_state[auth_state_key] = True
+                    st.sidebar.success("ตั้งรหัสผ่านสำเร็จ")
+                    st.rerun()
+                else:
+                    st.sidebar.error(
+                        "ไม่สามารถบันทึกรหัสผ่านได้ กรุณาตรวจสอบว่ามีชีต "
+                        f"'{ADMIN_PASSWORD_SHEET}' และ Google Apps Script อนุญาตให้บันทึกชีตนี้"
+                    )
         st.stop()
-    st.sidebar.success("✅ เข้าสู่ระบบระดับ Admin (คลังยา)")
+
+    # --- มีรหัสแล้ว: ตรวจสอบ session ก่อนถามรหัสซ้ำ ---
+    warehouse_authenticated = st.session_state.get(auth_state_key, False)
+
+    if not warehouse_authenticated:
+        admin_password = st.sidebar.text_input(
+            "รหัสผ่านส่วนตัว",
+            type="password",
+            key=f"login_password::{user_name}",
+        )
+        if st.sidebar.button("🔓 เข้าสู่ระบบ", key=f"login_btn::{user_name}"):
+            if verify_admin_password(user_name, admin_password):
+                st.session_state[auth_state_key] = True
+                st.rerun()
+            else:
+                st.sidebar.error("❌ รหัสผ่านไม่ถูกต้อง")
+        st.stop()
+
+    warehouse_authenticated = True
+    st.sidebar.success("✅ เข้าสู่ระบบระดับคลังยา")
+
+    # เปลี่ยนรหัสผ่านได้ด้วยตนเองหลังเข้าสู่ระบบแล้ว
+    with st.sidebar.expander("🔑 เปลี่ยนรหัสผ่าน"):
+        current_password = st.text_input(
+            "รหัสผ่านปัจจุบัน",
+            type="password",
+            key=f"change_current::{user_name}",
+        )
+        changed_password = st.text_input(
+            "รหัสผ่านใหม่",
+            type="password",
+            key=f"change_new::{user_name}",
+            help="อย่างน้อย 6 ตัวอักษร",
+        )
+        changed_password_confirm = st.text_input(
+            "ยืนยันรหัสผ่านใหม่",
+            type="password",
+            key=f"change_confirm::{user_name}",
+        )
+        if st.button("บันทึกรหัสผ่านใหม่", key=f"change_btn::{user_name}"):
+            if not verify_admin_password(user_name, current_password):
+                st.error("รหัสผ่านปัจจุบันไม่ถูกต้อง")
+            elif not password_is_valid(changed_password):
+                st.error("รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร")
+            elif changed_password != changed_password_confirm:
+                st.error("รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน")
+            elif hmac.compare_digest(current_password, changed_password):
+                st.error("รหัสผ่านใหม่ต้องไม่เหมือนรหัสผ่านเดิม")
+            else:
+                ok, msg = set_admin_password(user_name, changed_password)
+                if ok:
+                    st.success("เปลี่ยนรหัสผ่านสำเร็จ")
+                else:
+                    st.error(f"ไม่สามารถเปลี่ยนรหัสผ่านได้: {msg}")
+
+    if st.sidebar.button("🚪 ออกจากระบบคลังยา", key=f"logout_btn::{user_name}"):
+        st.session_state.pop(auth_state_key, None)
+        st.rerun()
 else:
     st.sidebar.success("✅ เข้าสู่ระบบระดับ User")
+
 st.sidebar.markdown("---")
 
 
@@ -345,7 +641,7 @@ menu_options = [
 ]
 
 # 3. ถ้าเป็นเภสัชคลังยา (warehouse) และผ่านรหัสผ่าน ให้เพิ่มเมนูที่ 5 เข้าไป
-if user_role == "warehouse":
+if user_role == "warehouse" and warehouse_authenticated:
     menu_options.append("5. 🔄 ติดตามสถานะคลังยา (Admin)")
 
 # แสดงเมนูตามสิทธิ์
