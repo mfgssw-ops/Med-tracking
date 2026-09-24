@@ -20,6 +20,46 @@ def get_thai_date(target_date):
     thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
     return f"{target_date.day} {thai_months[target_date.month]} {target_date.year + 543}"
 
+
+# --- ฟังก์ชันช่วยจัดการหลายรายการยาในเอกสารเดียว ---
+UNITS = ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"]
+
+def get_transaction_no(state_key, prefix):
+    """สร้างเลขเอกสารครั้งเดียวต่อ 1 transaction เพื่อไม่ให้เลขเปลี่ยนเมื่อ Streamlit rerun"""
+    if state_key not in st.session_state:
+        st.session_state[state_key] = f"{prefix}-{datetime.datetime.now().strftime('%y%m%d-%H%M%S')}"
+    return st.session_state[state_key]
+
+def get_item_list(state_key):
+    if state_key not in st.session_state:
+        st.session_state[state_key] = []
+    return st.session_state[state_key]
+
+def format_qty(value):
+    """แสดงจำนวนเต็มโดยไม่ติด .0 แต่ยังรองรับจำนวนทศนิยม"""
+    try:
+        value = float(value)
+        return str(int(value)) if value.is_integer() else f"{value:g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+def make_line_doc_no(base_doc_no, index):
+    return f"{base_doc_no}-{index:02d}"
+
+def drug_details_text(items, opd_mode=False):
+    lines = []
+    for idx, item in enumerate(items, start=1):
+        if opd_mode:
+            lines.append(
+                f"{idx}. {item['drug_name']} - จ่ายให้ผู้ป่วย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
+                f"/ รพ.ปลายทางทำเรื่องยืม {format_qty(item['borrow_qty'])} {item['unit']}"
+            )
+        else:
+            lines.append(
+                f"{idx}. {item['drug_name']} จำนวน {format_qty(item['qty'])} {item['unit']}"
+            )
+    return "\n".join(lines)
+
 # --- ฟังก์ชันติดต่อ Google Sheets ---
 def get_from_google_sheets(sheet_name):
     try:
@@ -200,7 +240,10 @@ menu = st.sidebar.radio("เลือกกรณีที่ต้องกา�
 # ==========================================
 if menu == "1. จ่ายยาออก (Refer รพช.)":
     st.subheader("📤 กรณีที่ 1: จ่ายยาให้ผู้ป่วย Refer กลับ รพช.")
-    
+
+    refer_items = get_item_list("refer_items")
+    doc_no = get_transaction_no("refer_doc_no", "REF")
+
     col1, col2 = st.columns(2)
     with col1:
         pt_name = st.text_input("ชื่อ-นามสกุล ผู้ป่วย")
@@ -208,59 +251,186 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
         target_hosp = st.selectbox("รพช. ปลายทาง", ["ทุ่งเสลี่ยม", "ศรีสัชนาลัย", "ศรีนคร", "สวรรคโลก", "อื่นๆ"])
     with col2:
         date_out = st.date_input("วันที่ทำรายการ", datetime.date.today())
-        auto_doc_no = f"REF-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
-        doc_no = st.text_input("เลขที่ใบยืม (สร้างอัตโนมัติ)", value=auto_doc_no, disabled=True)
-    
-    st.markdown("**รายการยา/เวชภัณฑ์ที่ให้ยืม**")
-    
-    # ปรับให้ช่องชื่อยา จำนวน และหน่วย อยู่ติดกัน
-    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
-    with col_d1:
-        drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
-    with col_d2:
-        qty = st.number_input("จำนวน", min_value=1)
-    with col_d3:
-        # เพิ่ม แกลลอน ในตัวเลือก
-        unit_choice = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"])
-        # ถ้าเลือกอื่นๆ จะมีช่องกรอกโผล่มาตรงนี้เลย
-        unit = st.text_input("ระบุหน่วย...") if unit_choice == "อื่นๆ" else unit_choice
-        
-    st.markdown("**เหตุผลความจำเป็น**")
-    reason_choice = st.radio("เลือกเหตุผล:", ["Refer Back", "ผู้ป่วยฉุกเฉิน / อุบัติเหตุ", "เหตุผลอื่นๆ ...."], horizontal=True, label_visibility="collapsed")
-    note = st.text_input("โปรดระบุเหตุผลอื่นๆ ...") if reason_choice == "เหตุผลอื่นๆ ...." else reason_choice
-        
-    st.markdown("---")
-    if st.button("💾 บันทึกข้อมูล และ สร้างใบให้ยืมยา"):
-        # แทนที่ total_value เดิมด้วย "-" เพื่อรักษารูปแบบคอลัมน์ใน Google Sheets ไว้
-        row_data = [doc_no, str(date_out), user_name, target_hosp, hn, drug_name, qty, unit, "-", note, "รอคืนยา"]
-        
-        with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
-            is_saved, debug_msg = save_to_google_sheets("Outbound_Refer", row_data=row_data, action="append")
-        
-        if is_saved:
-            st.success("✅ บันทึกข้อมูลลง Google Sheets สำเร็จ!")
-            try:
-                doc_refer = DocxTemplate("template_refer_out.docx")
-                context_refer = {
-                    'target_hospital': target_hosp, 'pt_name': pt_name, 'hn': hn,
-                    # เอาส่วนแสดงราคาออก เหลือแค่ ชื่อยา จำนวน หน่วย
-                    'drug_details': f"{drug_name} จำนวน {qty} {unit}",
-                    'user_name': user_name, 'thai_date': get_thai_date(date_out)
-                }
-                doc_refer.render(context_refer)
-                bio_refer = io.BytesIO()
-                doc_refer.save(bio_refer)
-                
-                st.download_button(
-                    label="📥 โหลดใบให้ยืมยา (ส่งตัวผู้ป่วย)",
-                    data=bio_refer.getvalue(),
-                    file_name=f"ReferOut_{doc_no}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-            except Exception as e:
-                st.error(f"⚠️ เกิดข้อผิดพลาดในการสร้างเอกสาร: {e}")
+        st.text_input("เลขที่ใบยืม (สร้างอัตโนมัติ)", value=doc_no, disabled=True, key=f"refer_doc_display_{doc_no}")
+        patient_type = st.radio("ประเภทผู้ป่วย", ["OPD", "IPD / อื่นๆ"], horizontal=True, key="refer_patient_type")
+
+    previous_refer_mode = st.session_state.get("refer_items_mode")
+    if previous_refer_mode is None:
+        st.session_state["refer_items_mode"] = patient_type
+    elif previous_refer_mode != patient_type:
+        st.session_state["refer_items"] = []
+        refer_items = st.session_state["refer_items"]
+        st.session_state["refer_items_mode"] = patient_type
+        st.info("ℹ️ เปลี่ยนประเภทผู้ป่วยแล้ว รายการยาของประเภทเดิมถูกล้างเพื่อป้องกันข้อมูลปะปน")
+
+    is_opd = patient_type == "OPD"
+    if is_opd:
+        st.info(
+            "🏥 **Flow OPD Refer Back:** รพ.เราจ่ายยาให้ผู้ป่วยสำหรับ 3 วัน "
+            "และจำนวนที่เหลือจะบันทึกเป็นรายการที่ รพ.ปลายทางต้องทำเรื่องยืมยา"
+        )
+
+    st.markdown("**เพิ่มรายการยา/เวชภัณฑ์**")
+    with st.form("refer_add_item_form", clear_on_submit=True):
+        if is_opd:
+            col_d1, col_d2, col_d3, col_d4 = st.columns([2.2, 1.2, 1.4, 1.1])
+            with col_d1:
+                drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
+            with col_d2:
+                qty_3day = st.number_input("จ่ายผู้ป่วย 3 วัน", min_value=0.0, step=1.0)
+            with col_d3:
+                borrow_qty = st.number_input("ส่วนที่ รพ.ปลายทางต้องยืม", min_value=0.0, step=1.0)
+            with col_d4:
+                unit_choice = st.selectbox("หน่วย", UNITS)
+                custom_unit = st.text_input("หน่วยอื่นๆ (กรอกเมื่อเลือก 'อื่นๆ')")
+            add_refer_item = st.form_submit_button("➕ เพิ่มรายการยา")
+
+            if add_refer_item:
+                unit = custom_unit.strip() if unit_choice == "อื่นๆ" else unit_choice
+                if not drug_name.strip():
+                    st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
+                elif not unit:
+                    st.error("กรุณาระบุหน่วย")
+                elif qty_3day <= 0 and borrow_qty <= 0:
+                    st.error("กรุณาระบุจำนวนยาอย่างน้อย 1 ช่อง")
+                else:
+                    refer_items.append({
+                        "drug_name": drug_name.strip(),
+                        "qty_3day": qty_3day,
+                        "borrow_qty": borrow_qty,
+                        "unit": unit,
+                    })
+                    st.rerun()
         else:
-            st.error(f"❌ ไม่สามารถบันทึกข้อมูลได้ สาเหตุ: {debug_msg}")
+            col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+            with col_d1:
+                drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
+            with col_d2:
+                qty = st.number_input("จำนวน", min_value=1.0, step=1.0)
+            with col_d3:
+                unit_choice = st.selectbox("หน่วย", UNITS)
+                custom_unit = st.text_input("หน่วยอื่นๆ (กรอกเมื่อเลือก 'อื่นๆ')")
+            add_refer_item = st.form_submit_button("➕ เพิ่มรายการยา")
+
+            if add_refer_item:
+                unit = custom_unit.strip() if unit_choice == "อื่นๆ" else unit_choice
+                if not drug_name.strip():
+                    st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
+                elif not unit:
+                    st.error("กรุณาระบุหน่วย")
+                else:
+                    refer_items.append({
+                        "drug_name": drug_name.strip(),
+                        "qty": qty,
+                        "unit": unit,
+                    })
+                    st.rerun()
+
+    if refer_items:
+        st.markdown(f"**รายการในใบนี้: {len(refer_items)} รายการ**")
+        for idx, item in enumerate(refer_items):
+            c1, c2 = st.columns([8, 1])
+            with c1:
+                if is_opd:
+                    st.write(
+                        f"{idx + 1}. {item['drug_name']} | จ่าย 3 วัน: {format_qty(item['qty_3day'])} {item['unit']} "
+                        f"| รพ.ปลายทางยืม: {format_qty(item['borrow_qty'])} {item['unit']}"
+                    )
+                else:
+                    st.write(f"{idx + 1}. {item['drug_name']} | {format_qty(item['qty'])} {item['unit']}")
+            with c2:
+                if st.button("🗑️", key=f"remove_refer_{idx}", help="ลบรายการนี้"):
+                    refer_items.pop(idx)
+                    st.rerun()
+    else:
+        st.caption("ยังไม่มีรายการยาในใบนี้")
+
+    st.markdown("**เหตุผลความจำเป็น**")
+    reason_choice = st.radio(
+        "เลือกเหตุผล:",
+        ["Refer Back", "ผู้ป่วยฉุกเฉิน / อุบัติเหตุ", "เหตุผลอื่นๆ ...."],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    note = st.text_input("โปรดระบุเหตุผลอื่นๆ ...") if reason_choice == "เหตุผลอื่นๆ ...." else reason_choice
+
+    st.markdown("---")
+    if st.button("💾 บันทึกข้อมูล และ สร้างใบให้ยืมยา", type="primary"):
+        if not pt_name.strip() or not hn.strip():
+            st.error("กรุณากรอกชื่อผู้ป่วยและ HN ให้ครบ")
+        elif not refer_items:
+            st.error("กรุณาเพิ่มรายการยาอย่างน้อย 1 รายการ")
+        else:
+            rows_to_save = []
+            for idx, item in enumerate(refer_items, start=1):
+                line_doc_no = make_line_doc_no(doc_no, idx)
+                if is_opd:
+                    # เฉพาะส่วนที่เหลือหลังจ่าย 3 วันเท่านั้นที่เป็นรายการยืมจาก รพ.ปลายทาง
+                    row_note = (
+                        f"{note} | OPD Refer Back | จ่ายผู้ป่วย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
+                        f"| รพ.ปลายทางต้องยืม {format_qty(item['borrow_qty'])} {item['unit']} | ใบหลัก {doc_no}"
+                    )
+                    if item["borrow_qty"] > 0:
+                        rows_to_save.append([
+                            line_doc_no, str(date_out), user_name, target_hosp, hn,
+                            item["drug_name"], item["borrow_qty"], item["unit"], "-", row_note,
+                            "รอเอกสารยืม"
+                        ])
+                else:
+                    row_note = f"{note} | ใบหลัก {doc_no}"
+                    rows_to_save.append([
+                        line_doc_no, str(date_out), user_name, target_hosp, hn,
+                        item["drug_name"], item["qty"], item["unit"], "-", row_note,
+                        "รอคืนยา"
+                    ])
+
+            saved_count = 0
+            errors = []
+            with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
+                for row_data in rows_to_save:
+                    is_saved, debug_msg = save_to_google_sheets("Outbound_Refer", row_data=row_data, action="append")
+                    if is_saved:
+                        saved_count += 1
+                    else:
+                        errors.append(f"{row_data[0]}: {debug_msg}")
+
+            if errors:
+                st.error("❌ บันทึกข้อมูลไม่ครบทุกรายการ\n" + "\n".join(errors))
+            else:
+                if rows_to_save:
+                    st.success(f"✅ บันทึกข้อมูลสำเร็จ {saved_count} รายการ ภายใต้ใบหลัก {doc_no}")
+                else:
+                    st.success("✅ OPD รายนี้ไม่มีส่วนยาคงเหลือที่ต้องทำเรื่องยืม จึงไม่มีรายการยืมที่ต้องบันทึก")
+
+                try:
+                    doc_refer = DocxTemplate("template_refer_out.docx")
+                    context_refer = {
+                        'target_hospital': target_hosp,
+                        'pt_name': pt_name,
+                        'hn': hn,
+                        'drug_details': drug_details_text(refer_items, opd_mode=is_opd),
+                        'user_name': user_name,
+                        'thai_date': get_thai_date(date_out),
+                        # ตัวแปรเสริม ใช้ได้ทันทีหากเพิ่ม placeholder ใน template ภายหลัง
+                        'patient_type': patient_type,
+                        'doc_no': doc_no,
+                    }
+                    doc_refer.render(context_refer)
+                    bio_refer = io.BytesIO()
+                    doc_refer.save(bio_refer)
+
+                    st.download_button(
+                        label="📥 โหลดใบให้ยืมยา (ส่งตัวผู้ป่วย)",
+                        data=bio_refer.getvalue(),
+                        file_name=f"ReferOut_{doc_no}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                except Exception as e:
+                    st.error(f"⚠️ เกิดข้อผิดพลาดในการสร้างเอกสาร: {e}")
+
+                # เตรียมเลขเอกสารและรายการใหม่สำหรับ transaction ถัดไปเมื่อหน้าจอ rerun
+                st.session_state["refer_items"] = []
+                st.session_state["refer_doc_no"] = f"REF-{datetime.datetime.now().strftime('%y%m%d-%H%M%S')}"
 
 
 # ==========================================
@@ -268,40 +438,78 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
 # ==========================================
 elif menu == "2. ยืมยาเข้า (ยา รพ. เราไม่พอ)":
     st.subheader("📥 กรณีที่ 2: ยืมยาจาก รพ. อื่น (ยาขาดคลัง)")
-    
+
+    borrow_items = get_item_list("borrow_items")
+    borrow_no = get_transaction_no("borrow_doc_no", "REQ")
+
     col1, col2 = st.columns(2)
     with col1:
-        auto_borrow_no = f"REQ-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
-        borrow_no = st.text_input("เลขที่การยืม (สร้างอัตโนมัติ)", value=auto_borrow_no, disabled=True)
+        st.text_input("เลขที่การยืม (สร้างอัตโนมัติ)", value=borrow_no, disabled=True, key=f"borrow_doc_display_{borrow_no}")
         source_hosp = st.text_input("รพ. ที่เราต้องการขอยืม")
     with col2:
         date_req = st.date_input("วันที่แจ้งเรื่อง", datetime.date.today())
-    
-    # จัดกลุ่มให้ ชื่อยา, จำนวน, และหน่วย เรียงต่อกัน
-    st.markdown("**รายการยาที่ต้องการยืม**")
-    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
-    with col_d1:
-        drug_missing = st.text_input("ชื่อยาที่ขาด/ต้องการยืม")
-    with col_d2:
-        borrow_qty = st.number_input("จำนวนที่ต้องการยืม", min_value=1)
-    with col_d3:
-        # เพิ่ม แกลลอน ในตัวเลือก
-        unit_choice2 = st.selectbox("หน่วย (ยืมเข้า)", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"])
-        # ถ้าเลือกอื่นๆ ช่องกรอกจะปรากฏในคอลัมน์เดียวกัน
-        unit2 = st.text_input("ระบุหน่วย... (ยืมเข้า)") if unit_choice2 == "อื่นๆ" else unit_choice2
+
+    st.markdown("**เพิ่มรายการยาที่ต้องการยืม**")
+    with st.form("borrow_add_item_form", clear_on_submit=True):
+        col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+        with col_d1:
+            drug_missing = st.text_input("ชื่อยาที่ขาด/ต้องการยืม")
+        with col_d2:
+            borrow_qty = st.number_input("จำนวนที่ต้องการยืม", min_value=1.0, step=1.0)
+        with col_d3:
+            unit_choice2 = st.selectbox("หน่วย (ยืมเข้า)", UNITS)
+            custom_unit2 = st.text_input("หน่วยอื่นๆ (กรอกเมื่อเลือก 'อื่นๆ')")
+        add_borrow_item = st.form_submit_button("➕ เพิ่มรายการยา")
+
+        if add_borrow_item:
+            unit2 = custom_unit2.strip() if unit_choice2 == "อื่นๆ" else unit_choice2
+            if not drug_missing.strip():
+                st.error("กรุณาระบุชื่อยา")
+            elif not unit2:
+                st.error("กรุณาระบุหน่วย")
+            else:
+                borrow_items.append({"drug_name": drug_missing.strip(), "qty": borrow_qty, "unit": unit2})
+                st.rerun()
+
+    if borrow_items:
+        st.markdown(f"**รายการในใบนี้: {len(borrow_items)} รายการ**")
+        for idx, item in enumerate(borrow_items):
+            c1, c2 = st.columns([8, 1])
+            with c1:
+                st.write(f"{idx + 1}. {item['drug_name']} | {format_qty(item['qty'])} {item['unit']}")
+            with c2:
+                if st.button("🗑️", key=f"remove_borrow_{idx}", help="ลบรายการนี้"):
+                    borrow_items.pop(idx)
+                    st.rerun()
+    else:
+        st.caption("ยังไม่มีรายการยาในใบนี้")
 
     st.markdown("---")
-    
-    if st.button("💾 บันทึกข้อมูลการยืมยาเข้าคลัง"):
-        row_data_in = [borrow_no, str(date_req), user_name, drug_missing, borrow_qty, unit2, source_hosp, "รอคืนยา", "-"]
-        
-        with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
-            is_saved, debug_msg = save_to_google_sheets("Inbound_Shortage", row_data=row_data_in, action="append")
-        
-        if is_saved:
-            st.success("✅ บันทึกข้อมูลกรณีรพ. ยืมยาเข้า ลง Google Sheets สำเร็จ!")
+    if st.button("💾 บันทึกข้อมูลการยืมยาเข้าคลัง", type="primary"):
+        if not source_hosp.strip():
+            st.error("กรุณาระบุโรงพยาบาลที่ต้องการขอยืม")
+        elif not borrow_items:
+            st.error("กรุณาเพิ่มรายการยาอย่างน้อย 1 รายการ")
         else:
-            st.error(f"❌ ไม่สามารถบันทึกข้อมูลได้ สาเหตุ: {debug_msg}")
+            saved_count = 0
+            errors = []
+            with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
+                for idx, item in enumerate(borrow_items, start=1):
+                    line_doc_no = make_line_doc_no(borrow_no, idx)
+                    row_data_in = [
+                        line_doc_no, str(date_req), user_name, item["drug_name"],
+                        item["qty"], item["unit"], source_hosp, "รอคืนยา", f"ใบหลัก {borrow_no}"
+                    ]
+                    is_saved, debug_msg = save_to_google_sheets("Inbound_Shortage", row_data=row_data_in, action="append")
+                    if is_saved:
+                        saved_count += 1
+                    else:
+                        errors.append(f"{line_doc_no}: {debug_msg}")
+
+            if errors:
+                st.error("❌ บันทึกข้อมูลไม่ครบทุกรายการ\n" + "\n".join(errors))
+            else:
+                st.success(f"✅ บันทึกข้อมูลสำเร็จ {saved_count} รายการ ภายใต้ใบหลัก {borrow_no}")
 
     st.markdown("---")
     st.subheader("🖨️ พิมพ์เอกสารขอยืมยาเข้า รพ.")
@@ -310,78 +518,142 @@ elif menu == "2. ยืมยาเข้า (ยา รพ. เราไม่�
     with col_memo:
         st.info("🌙 สำหรับเภสัชกรอยู่เวร")
         if st.button("📄 พิมพ์บันทึกข้อความ"):
-            try:
-                doc_memo = DocxTemplate("template_memo.docx")
-                context_memo = {
-                    'target_hospital': source_hosp, 'drug_details': f"{drug_missing} จำนวน {borrow_qty} {unit2}",
-                    'user_name': user_name, 'thai_date': get_thai_date(date_req)
-                }
-                doc_memo.render(context_memo)
-                bio_memo = io.BytesIO()
-                doc_memo.save(bio_memo)
-                st.download_button("📥 โหลดบันทึกข้อความ", data=bio_memo.getvalue(), file_name=f"Memo_{borrow_no}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            except Exception as e:
-                st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
+            if not borrow_items:
+                st.error("กรุณาเพิ่มรายการยาอย่างน้อย 1 รายการก่อนพิมพ์เอกสาร")
+            else:
+                try:
+                    doc_memo = DocxTemplate("template_memo.docx")
+                    context_memo = {
+                        'target_hospital': source_hosp,
+                        'drug_details': drug_details_text(borrow_items),
+                        'user_name': user_name,
+                        'thai_date': get_thai_date(date_req),
+                        'doc_no': borrow_no,
+                    }
+                    doc_memo.render(context_memo)
+                    bio_memo = io.BytesIO()
+                    doc_memo.save(bio_memo)
+                    st.download_button(
+                        "📥 โหลดบันทึกข้อความ",
+                        data=bio_memo.getvalue(),
+                        file_name=f"Memo_{borrow_no}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                except Exception as e:
+                    st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
 
     with col_official:
         st.success("☀️ สำหรับคลังยา (งานสารบรรณ)")
-        formal_reason = st.selectbox("เลือกเหตุผลในหนังสือ:", ["ยาขาดชั่วคราว จำเป็นต้องใช้เร่งด่วน", "ไม่มียาในบัญชีของโรงพยาบาล", "เป็นยา จ2 ไม่มียาในบัญชียา"])
+        formal_reason = st.selectbox(
+            "เลือกเหตุผลในหนังสือ:",
+            ["ยาขาดชั่วคราว จำเป็นต้องใช้เร่งด่วน", "ไม่มียาในบัญชีของโรงพยาบาล", "เป็นยา จ2 ไม่มียาในบัญชียา"]
+        )
         if st.button("🦅 พิมพ์หนังสือตราครุฑ"):
-            try:
-                doc_official = DocxTemplate("template_official.docx")
-                context_official = {
-                    'target_hospital': source_hosp, 'reason': formal_reason,
-                    'drug_details': f"{drug_missing} จำนวน {borrow_qty} {unit2}", 'thai_date': get_thai_date(date_req)
-                }
-                doc_official.render(context_official)
-                bio_official = io.BytesIO()
-                doc_official.save(bio_official)
-                st.download_button("📥 โหลดหนังสือตราครุฑ", data=bio_official.getvalue(), file_name=f"Official_{borrow_no}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            except Exception as e:
-                st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
+            if not borrow_items:
+                st.error("กรุณาเพิ่มรายการยาอย่างน้อย 1 รายการก่อนพิมพ์เอกสาร")
+            else:
+                try:
+                    doc_official = DocxTemplate("template_official.docx")
+                    context_official = {
+                        'target_hospital': source_hosp,
+                        'reason': formal_reason,
+                        'drug_details': drug_details_text(borrow_items),
+                        'thai_date': get_thai_date(date_req),
+                        'doc_no': borrow_no,
+                    }
+                    doc_official.render(context_official)
+                    bio_official = io.BytesIO()
+                    doc_official.save(bio_official)
+                    st.download_button(
+                        "📥 โหลดหนังสือตราครุฑ",
+                        data=bio_official.getvalue(),
+                        file_name=f"Official_{borrow_no}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                except Exception as e:
+                    st.error(f"⚠️ เกิดข้อผิดพลาด: {e}")
+
 
 # ==========================================
 # เมนูที่ 3: ให้ รพ.อื่นยืมยา (Lend Out)
 # ==========================================
 elif menu == "3. ให้ รพ.อื่นยืมยา (ยา รพ.อื่นขาด)":
     st.subheader("📤 กรณีที่ 3: ให้ รพ.อื่นยืมยา (ยา รพ.อื่นขาดคลัง)")
-    
-    # --- แถวที่ 1: เลขที่ให้ยืม และ วันที่ ---
+
+    lend_items = get_item_list("lend_items")
+    lend_no = get_transaction_no("lend_doc_no", "LEND")
+
     col1, col2 = st.columns(2)
     with col1:
-        auto_lend_no = f"LEND-{datetime.datetime.now().strftime('%y%m%d-%H%M')}"
-        lend_no = st.text_input("เลขที่การให้ยืม (สร้างอัตโนมัติ)", value=auto_lend_no, disabled=True)
+        st.text_input("เลขที่การให้ยืม (สร้างอัตโนมัติ)", value=lend_no, disabled=True, key=f"lend_doc_display_{lend_no}")
     with col2:
         date_lend = st.date_input("วันที่ให้ยืม", datetime.date.today())
-        
-    # --- แถวที่ 2: รพ. ที่มายืมยา ---
+
     target_hosp_lend = st.text_input("ชื่อ รพ. ที่มายืมยา")
-    
-    # --- แถวที่ 3: รายการยา จำนวน และหน่วย (เรียงติดกัน) ---
-    st.markdown("**รายการยาที่ให้ยืม**")
-    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
-    
-    with col_d1:
-        drug_lended = st.text_input("ชื่อยา หรือ เวชภัณฑ์ที่ให้ยืม")
-    with col_d2:
-        lend_qty = st.number_input("จำนวนที่ให้ยืม", min_value=1, key="lend_qty")
-    with col_d3:
-        # เพิ่ม 'แกลลอน' เข้าไปในตัวเลือกด้วย เพื่อให้สอดคล้องกับเมนูอื่น
-        unit_choice_lend = st.selectbox("หน่วย", ["เม็ด", "ไวอัล", "แอมพูล", "ขวด", "หลอด", "กล่อง", "แกลลอน", "set", "ชิ้น", "อื่นๆ"], key="unit_lend_select")
-        unit_lend = st.text_input("ระบุหน่วย...") if unit_choice_lend == "อื่นๆ" else unit_choice_lend
+
+    st.markdown("**เพิ่มรายการยาที่ให้ยืม**")
+    with st.form("lend_add_item_form", clear_on_submit=True):
+        col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+        with col_d1:
+            drug_lended = st.text_input("ชื่อยา หรือ เวชภัณฑ์ที่ให้ยืม")
+        with col_d2:
+            lend_qty = st.number_input("จำนวนที่ให้ยืม", min_value=1.0, step=1.0)
+        with col_d3:
+            unit_choice_lend = st.selectbox("หน่วย", UNITS)
+            custom_unit_lend = st.text_input("หน่วยอื่นๆ (กรอกเมื่อเลือก 'อื่นๆ')")
+        add_lend_item = st.form_submit_button("➕ เพิ่มรายการยา")
+
+        if add_lend_item:
+            unit_lend = custom_unit_lend.strip() if unit_choice_lend == "อื่นๆ" else unit_choice_lend
+            if not drug_lended.strip():
+                st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
+            elif not unit_lend:
+                st.error("กรุณาระบุหน่วย")
+            else:
+                lend_items.append({"drug_name": drug_lended.strip(), "qty": lend_qty, "unit": unit_lend})
+                st.rerun()
+
+    if lend_items:
+        st.markdown(f"**รายการในใบนี้: {len(lend_items)} รายการ**")
+        for idx, item in enumerate(lend_items):
+            c1, c2 = st.columns([8, 1])
+            with c1:
+                st.write(f"{idx + 1}. {item['drug_name']} | {format_qty(item['qty'])} {item['unit']}")
+            with c2:
+                if st.button("🗑️", key=f"remove_lend_{idx}", help="ลบรายการนี้"):
+                    lend_items.pop(idx)
+                    st.rerun()
+    else:
+        st.caption("ยังไม่มีรายการยาในใบนี้")
 
     st.markdown("---")
-    
-    if st.button("💾 บันทึกข้อมูลให้ รพ.อื่นยืมยา"):
-        row_data_lend = [lend_no, str(date_lend), user_name, target_hosp_lend, drug_lended, lend_qty, unit_lend, "รอรับคืน"]
-        
-        with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
-            is_saved, debug_msg = save_to_google_sheets("Outbound_Lend", row_data=row_data_lend, action="append")
-        
-        if is_saved:
-            st.success(f"✅ บันทึกข้อมูลสำเร็จ! (รพ.{target_hosp_lend} ยืม {drug_lended} จำนวน {lend_qty} {unit_lend})")
+    if st.button("💾 บันทึกข้อมูลให้ รพ.อื่นยืมยา", type="primary"):
+        if not target_hosp_lend.strip():
+            st.error("กรุณาระบุชื่อโรงพยาบาลที่มายืมยา")
+        elif not lend_items:
+            st.error("กรุณาเพิ่มรายการยาอย่างน้อย 1 รายการ")
         else:
-            st.error(f"❌ ไม่สามารถบันทึกข้อมูลได้ สาเหตุ: {debug_msg}")
+            saved_count = 0
+            errors = []
+            with st.spinner('กำลังบันทึกข้อมูลลง Google Sheets...'):
+                for idx, item in enumerate(lend_items, start=1):
+                    line_doc_no = make_line_doc_no(lend_no, idx)
+                    row_data_lend = [
+                        line_doc_no, str(date_lend), user_name, target_hosp_lend,
+                        item["drug_name"], item["qty"], item["unit"], "รอรับคืน"
+                    ]
+                    is_saved, debug_msg = save_to_google_sheets("Outbound_Lend", row_data=row_data_lend, action="append")
+                    if is_saved:
+                        saved_count += 1
+                    else:
+                        errors.append(f"{line_doc_no}: {debug_msg}")
+
+            if errors:
+                st.error("❌ บันทึกข้อมูลไม่ครบทุกรายการ\n" + "\n".join(errors))
+            else:
+                st.success(f"✅ บันทึกข้อมูลสำเร็จ {saved_count} รายการ ภายใต้ใบหลัก {lend_no}")
+                st.session_state["lend_items"] = []
+                st.session_state["lend_doc_no"] = f"LEND-{datetime.datetime.now().strftime('%y%m%d-%H%M%S')}"
 
 # ==========================================
 # เมนูที่ 4: Dashboard สรุปข้อมูล
@@ -415,23 +687,52 @@ elif menu == "4. 📊 Dashboard สรุปข้อมูล":
 elif menu == "5. 🔄 ติดตามสถานะคลังยา (Admin)":
     st.subheader("🔄 จัดการสถานะการยืม-คืนยา")
     
-    tab1, tab2, tab3 = st.tabs(["📥 รับยาคืน (Refer Out)", "📤 ส่งยาคืน (เรายืมเขา)", "📥 รับยาคืน (รพ.อื่นยืมเรา)"])
+    tab1, tab2, tab3 = st.tabs(["📥 OPD / รับยาคืน (Refer Out)", "📤 ส่งยาคืน (เรายืมเขา)", "📥 รับยาคืน (รพ.อื่นยืมเรา)"])
     
-    # ---------------- แท็บที่ 1: รับยาคืน ----------------
+    # ---------------- แท็บที่ 1: OPD รอเอกสารยืม / รับยาคืน ----------------
     with tab1:
-        st.markdown("**รายการที่จ่ายยาออกไป และยังไม่ได้รับคืน**")
         out_data = get_from_google_sheets("Outbound_Refer")
         
         if out_data and len(out_data) > 1:
+            waiting_docs = [row for row in out_data[1:] if len(row) > 10 and row[10] == "รอเอกสารยืม"]
             pending_out = [row for row in out_data[1:] if len(row) > 10 and row[10] == "รอคืนยา"]
-            
+
+            st.markdown("**1) OPD Refer Back: รายการที่รอ รพ.ปลายทางส่งเรื่องยืม**")
+            if waiting_docs:
+                doc_options = [f"เลขที่: {row[0]} | รพ: {row[3]} | ยา: {row[5]} ({row[6]} {row[7]})" for row in waiting_docs]
+                selected_doc = st.selectbox(
+                    "เลือกรายการที่ได้รับเอกสารยืมจาก รพ.ปลายทางแล้ว:",
+                    ["-- เลือกรายการ --"] + doc_options,
+                    key="opd_waiting_doc_select"
+                )
+                if selected_doc != "-- เลือกรายการ --":
+                    doc_id_waiting = selected_doc.split(" | ")[0].replace("เลขที่: ", "")
+                    if st.button("📄 ยืนยันได้รับเรื่องยืมแล้ว", key="confirm_borrow_doc"):
+                        with st.spinner("กำลังอัปเดตฐานข้อมูล..."):
+                            is_saved, msg = save_to_google_sheets(
+                                "Outbound_Refer", action="update", doc_id=doc_id_waiting, new_status="รอคืนยา"
+                            )
+                            if is_saved:
+                                st.success(f"✅ {doc_id_waiting} เปลี่ยนสถานะเป็น 'รอคืนยา' แล้ว")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ ผิดพลาด: {msg}")
+            else:
+                st.info("✨ ไม่มีรายการ OPD ที่รอเอกสารยืม")
+
+            st.markdown("---")
+            st.markdown("**2) รายการที่จ่าย/ให้ยืมออกไป และยังไม่ได้รับคืน**")
             if pending_out:
                 out_options = [f"เลขที่: {row[0]} | รพ: {row[3]} | ยา: {row[5]} ({row[6]} {row[7]})" for row in pending_out]
-                selected_out = st.selectbox("เลือกรายการที่ รพช. ส่งยามาคืนแล้ว:", ["-- เลือกรายการ --"] + out_options)
+                selected_out = st.selectbox(
+                    "เลือกรายการที่ รพช. ส่งยามาคืนแล้ว:",
+                    ["-- เลือกรายการ --"] + out_options,
+                    key="refer_return_select"
+                )
                 
                 if selected_out != "-- เลือกรายการ --":
                     doc_id = selected_out.split(" | ")[0].replace("เลขที่: ", "")
-                    if st.button("✅ ยืนยันการรับยาคืนเข้าสต๊อก"):
+                    if st.button("✅ ยืนยันการรับยาคืนเข้าสต๊อก", key="confirm_refer_return"):
                         with st.spinner("กำลังอัปเดตฐานข้อมูล..."):
                             is_saved, msg = save_to_google_sheets("Outbound_Refer", action="update", doc_id=doc_id, new_status="รับคืนแล้ว")
                             if is_saved:
