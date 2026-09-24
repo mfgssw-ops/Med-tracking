@@ -60,8 +60,8 @@ def drug_details_text(items, opd_mode=False):
     for idx, item in enumerate(items, start=1):
         if opd_mode:
             lines.append(
-                f"{idx}. {item['drug_name']} - จ่ายให้ 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
-                f"/ รพ.ปลายทางทำยืม {format_qty(item['borrow_qty'])} {item['unit']}"
+                f"{idx}. {item['drug_name']} - จ่าย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
+                f"/ รพ.ปลายทางทำเรื่องยืม {format_qty(item['borrow_qty'])} {item['unit']}"
             )
         else:
             lines.append(
@@ -135,7 +135,7 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
     if opd_mode:
         # คอลัมน์สุดท้ายช่วยตรวจสอบได้ทันทีว่า 3 วันที่ รพ.เราจ่าย + ส่วนที่ รพ.ปลายทางยืม
         # รวมแล้วตรงกับจำนวนยาที่ผู้ป่วยต้องใช้ทั้งหมดหรือไม่
-        headers = ["ลำดับ", "รายการยา", "จ่าย 3 วัน", "แจ้งทำเรื่องขอยืม", "รวมที่ต้องใช้"]
+        headers = ["ลำดับ", "รายการยา", "จ่าย 3 วัน", "ทำเรื่องขอยืม", "รวมจ่าย"]
         rows = []
         for idx, item in enumerate(items, start=1):
             qty_3day = float(item["qty_3day"])
@@ -183,29 +183,45 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
 # --- ฟังก์ชันติดต่อ Google Sheets ---
 def get_from_google_sheets(sheet_name):
     try:
-        response = requests.get(f"{WEBHOOK_URL}?sheet_name={sheet_name}")
-        if response.status_code == 200 and response.json().get("status") == "success":
-            return response.json().get("data")
+        response = requests.get(
+            WEBHOOK_URL,
+            params={"sheet_name": sheet_name},
+            timeout=20,
+        )
+        response.raise_for_status()
+        result = response.json()
+        if result.get("status") == "success":
+            return result.get("data", [])
+        # ไม่ให้ error ถูกกลืนจนหา原因ไม่ได้
+        st.session_state[f"sheet_error_{sheet_name}"] = result.get("message", "Unknown Google Sheets error")
         return []
-    except:
+    except Exception as e:
+        st.session_state[f"sheet_error_{sheet_name}"] = str(e)
         return []
 
 def save_to_google_sheets(sheet_name, row_data=None, action="append", doc_id=None, new_status=None):
     if "script.google.com" not in WEBHOOK_URL:
         return False, "ยังไม่ได้ใส่ WEBHOOK_URL ในโค้ด Python ค่ะ"
-        
+
     payload = {"sheet_name": sheet_name, "action": action}
     if action == "append":
         payload["row_data"] = row_data
     elif action == "update":
         payload["doc_id"] = doc_id
         payload["new_status"] = new_status
-        
+
     try:
-        response = requests.post(WEBHOOK_URL, json=payload, allow_redirects=True)
-        if response.status_code == 200 and "success" in response.text:
-            return True, "Success"
-        return False, response.text
+        response = requests.post(
+            WEBHOOK_URL,
+            json=payload,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        result = response.json()
+        if result.get("status") == "success":
+            return True, result.get("message", "Success")
+        return False, result.get("message", response.text)
     except Exception as e:
         return False, str(e)
 
