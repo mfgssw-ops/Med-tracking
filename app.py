@@ -57,8 +57,8 @@ def drug_details_text(items, opd_mode=False):
     for idx, item in enumerate(items, start=1):
         if opd_mode:
             lines.append(
-                f"{idx}. {item['drug_name']} - จ่ายให้ผู้ป่วย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
-                f"/ รพ.ปลายทางทำเรื่องยืม {format_qty(item['borrow_qty'])} {item['unit']}"
+                f"{idx}. {item['drug_name']} - จ่ายผู้ป่วย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
+                f"/ รพ.ปลายทางทำยืม {format_qty(item['borrow_qty'])} {item['unit']}"
             )
         else:
             lines.append(
@@ -132,7 +132,7 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
     if opd_mode:
         # คอลัมน์สุดท้ายช่วยตรวจสอบได้ทันทีว่า 3 วันที่ รพ.เราจ่าย + ส่วนที่ รพ.ปลายทางยืม
         # รวมแล้วตรงกับจำนวนยาที่ผู้ป่วยต้องใช้ทั้งหมดหรือไม่
-        headers = ["ลำดับ", "รายการ", "จ่าย\n3 วัน", "รพ.ปลายทาง\nขอยืม", "รวมจ่าย"]
+        headers = ["ลำดับ", "รายการยา", "จ่ายผู้ป่วย\n3 วัน", "รพ.ปลายทาง\nขอยืม", "รวมที่ต้องใช้"]
         rows = []
         for idx, item in enumerate(items, start=1):
             qty_3day = float(item["qty_3day"])
@@ -157,7 +157,7 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
     _hide_table_borders(table)
 
     for col, heading in enumerate(headers):
-        _set_cell_text(table.rows[0].cells[col], heading, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+        _set_cell_text(table.rows[0].cells[col], heading, bold=False, align=WD_ALIGN_PARAGRAPH.CENTER)
 
     for row_values in rows:
         cells = table.add_row().cells
@@ -388,60 +388,87 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
         )
 
     st.markdown("**เพิ่มรายการยา/เวชภัณฑ์**")
-    with st.form("refer_add_item_form", clear_on_submit=True):
-        if is_opd:
-            col_d1, col_d2, col_d3, col_d4 = st.columns([2.2, 1.2, 1.4, 1.1])
-            with col_d1:
-                drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
-            with col_d2:
-                qty_3day = st.number_input("จ่ายผู้ป่วย 3 วัน", min_value=0.0, step=1.0)
-            with col_d3:
-                borrow_qty = st.number_input("ส่วนที่ รพ.ปลายทางต้องยืม", min_value=0.0, step=1.0)
-            with col_d4:
-                unit_choice = st.selectbox("หน่วย", UNITS)
-                custom_unit = st.text_input("หน่วยอื่นๆ (กรอกเมื่อเลือก 'อื่นๆ')")
-            add_refer_item = st.form_submit_button("➕ เพิ่มรายการยา")
 
-            if add_refer_item:
-                unit = custom_unit.strip() if unit_choice == "อื่นๆ" else unit_choice
-                if not drug_name.strip():
-                    st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
-                elif not unit:
-                    st.error("กรุณาระบุหน่วย")
-                elif qty_3day <= 0 and borrow_qty <= 0:
-                    st.error("กรุณาระบุจำนวนยาอย่างน้อย 1 ช่อง")
-                else:
-                    refer_items.append({
-                        "drug_name": drug_name.strip(),
-                        "qty_3day": qty_3day,
-                        "borrow_qty": borrow_qty,
-                        "unit": unit,
-                    })
-                    st.rerun()
-        else:
-            col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
-            with col_d1:
-                drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์")
-            with col_d2:
-                qty = st.number_input("จำนวน", min_value=1.0, step=1.0)
-            with col_d3:
-                unit_choice = st.selectbox("หน่วย", UNITS)
-                custom_unit = st.text_input("หน่วยอื่นๆ (กรอกเมื่อเลือก 'อื่นๆ')")
-            add_refer_item = st.form_submit_button("➕ เพิ่มรายการยา")
+    # ใช้ widget ปกติแทน st.form เพื่อให้ช่อง "หน่วยอื่นๆ" แสดงเฉพาะเมื่อเลือก "อื่นๆ"
+    # ทำให้การกรอกตามปกติอยู่ในบรรทัดเดียวกัน และยังเปลี่ยน UI ได้ทันทีเมื่อเลือกหน่วย
+    refer_input_keys = [
+        "refer_drug_name_input", "refer_qty_3day_input", "refer_borrow_qty_input",
+        "refer_qty_input", "refer_unit_choice_input", "refer_custom_unit_input",
+    ]
+    if st.session_state.pop("reset_refer_item_inputs", False):
+        for key in refer_input_keys:
+            st.session_state.pop(key, None)
 
-            if add_refer_item:
-                unit = custom_unit.strip() if unit_choice == "อื่นๆ" else unit_choice
-                if not drug_name.strip():
-                    st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
-                elif not unit:
-                    st.error("กรุณาระบุหน่วย")
-                else:
-                    refer_items.append({
-                        "drug_name": drug_name.strip(),
-                        "qty": qty,
-                        "unit": unit,
-                    })
-                    st.rerun()
+    if is_opd:
+        col_d1, col_d2, col_d3, col_d4 = st.columns([2.4, 1.25, 1.55, 1.0])
+        with col_d1:
+            drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์", key="refer_drug_name_input")
+        with col_d2:
+            qty_3day = st.number_input(
+                "จ่ายผู้ป่วย 3 วัน", min_value=0.0, step=1.0, key="refer_qty_3day_input"
+            )
+        with col_d3:
+            borrow_qty = st.number_input(
+                "ส่วนที่ รพ.ปลายทางต้องยืม", min_value=0.0, step=1.0, key="refer_borrow_qty_input"
+            )
+        with col_d4:
+            unit_choice = st.selectbox("หน่วย", UNITS, key="refer_unit_choice_input")
+
+        # แสดงช่องระบุหน่วยเพิ่มเติมเฉพาะกรณีเลือก "อื่นๆ" เท่านั้น
+        custom_unit = ""
+        if unit_choice == "อื่นๆ":
+            custom_unit = st.text_input(
+                "ระบุหน่วยอื่นๆ", key="refer_custom_unit_input", placeholder="เช่น ซอง"
+            )
+
+        add_refer_item = st.button("➕ เพิ่มรายการยา", key="add_refer_item_opd")
+        if add_refer_item:
+            unit = custom_unit.strip() if unit_choice == "อื่นๆ" else unit_choice
+            if not drug_name.strip():
+                st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
+            elif not unit:
+                st.error("กรุณาระบุหน่วย")
+            elif qty_3day <= 0 and borrow_qty <= 0:
+                st.error("กรุณาระบุจำนวนยาอย่างน้อย 1 ช่อง")
+            else:
+                refer_items.append({
+                    "drug_name": drug_name.strip(),
+                    "qty_3day": qty_3day,
+                    "borrow_qty": borrow_qty,
+                    "unit": unit,
+                })
+                st.session_state["reset_refer_item_inputs"] = True
+                st.rerun()
+    else:
+        col_d1, col_d2, col_d3 = st.columns([2.5, 1.0, 1.0])
+        with col_d1:
+            drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์", key="refer_drug_name_input")
+        with col_d2:
+            qty = st.number_input("จำนวน", min_value=1.0, step=1.0, key="refer_qty_input")
+        with col_d3:
+            unit_choice = st.selectbox("หน่วย", UNITS, key="refer_unit_choice_input")
+
+        custom_unit = ""
+        if unit_choice == "อื่นๆ":
+            custom_unit = st.text_input(
+                "ระบุหน่วยอื่นๆ", key="refer_custom_unit_input", placeholder="เช่น ซอง"
+            )
+
+        add_refer_item = st.button("➕ เพิ่มรายการยา", key="add_refer_item_non_opd")
+        if add_refer_item:
+            unit = custom_unit.strip() if unit_choice == "อื่นๆ" else unit_choice
+            if not drug_name.strip():
+                st.error("กรุณาระบุชื่อยา/เวชภัณฑ์")
+            elif not unit:
+                st.error("กรุณาระบุหน่วย")
+            else:
+                refer_items.append({
+                    "drug_name": drug_name.strip(),
+                    "qty": qty,
+                    "unit": unit,
+                })
+                st.session_state["reset_refer_item_inputs"] = True
+                st.rerun()
 
     if refer_items:
         st.markdown(f"**รายการในใบนี้: {len(refer_items)} รายการ**")
