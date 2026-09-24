@@ -8,6 +8,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
 
 
 # ==========================================
@@ -67,14 +68,26 @@ def drug_details_text(items, opd_mode=False):
 
 
 def _set_cell_text(cell, text, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT):
-    """ใส่ข้อความใน cell พร้อมฟอนต์ Sarabun สำหรับเอกสารราชการ"""
+    """ใส่ข้อความใน cell ด้วย TH Sarabun New ให้ตรงกับ template งานสารบรรณ"""
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = align
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+
     run = p.add_run(str(text))
     run.bold = bold
-    run.font.name = "Sarabun"
-    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Sarabun")
+    run.font.name = "TH Sarabun New"
+    run.font.size = Pt(16)
+
+    # Word แยกการกำหนด font สำหรับ Latin / Thai / complex script
+    # จึงระบุให้ครบเพื่อป้องกันข้อความที่สร้างใหม่เด้งกลับไปเป็น Calibri/Aptos
+    rpr = run._element.get_or_add_rPr()
+    rfonts = rpr.get_or_add_rFonts()
+    rfonts.set(qn("w:ascii"), "TH Sarabun New")
+    rfonts.set(qn("w:hAnsi"), "TH Sarabun New")
+    rfonts.set(qn("w:eastAsia"), "TH Sarabun New")
+    rfonts.set(qn("w:cs"), "TH Sarabun New")
 
 
 def _hide_table_borders(table):
@@ -117,11 +130,21 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
             run.text = run.text.replace(marker, "")
 
     if opd_mode:
-        headers = ["ลำดับ", "รายการยา", "จ่ายผู้ป่วย 3 วัน", "จำนวนที่ รพ.ปลายทางต้องยืม"]
-        rows = [
-            [idx, item["drug_name"], f"{format_qty(item['qty_3day'])} {item['unit']}", f"{format_qty(item['borrow_qty'])} {item['unit']}"]
-            for idx, item in enumerate(items, start=1)
-        ]
+        # คอลัมน์สุดท้ายช่วยตรวจสอบได้ทันทีว่า 3 วันที่ รพ.เราจ่าย + ส่วนที่ รพ.ปลายทางยืม
+        # รวมแล้วตรงกับจำนวนยาที่ผู้ป่วยต้องใช้ทั้งหมดหรือไม่
+        headers = ["ลำดับ", "รายการ", "จ่าย\n3 วัน", "รพ.ปลายทาง\nขอยืม", "รวมจ่าย"]
+        rows = []
+        for idx, item in enumerate(items, start=1):
+            qty_3day = float(item["qty_3day"])
+            borrow_qty = float(item["borrow_qty"])
+            total_qty = qty_3day + borrow_qty
+            rows.append([
+                idx,
+                item["drug_name"],
+                f"{format_qty(qty_3day)} {item['unit']}",
+                f"{format_qty(borrow_qty)} {item['unit']}",
+                f"{format_qty(total_qty)} {item['unit']}",
+            ])
     else:
         headers = ["ลำดับ", "รายการยา", "จำนวน"]
         rows = [
@@ -142,8 +165,12 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
             align = WD_ALIGN_PARAGRAPH.CENTER if col == 0 else WD_ALIGN_PARAGRAPH.LEFT
             _set_cell_text(cells[col], value, align=align)
 
-    # ย้ายตารางจากท้ายเอกสารไปไว้ถัดจากตำแหน่ง {{ drug_details }} เดิม
-    marker_paragraph._p.addnext(table._tbl)
+    # ย้ายตารางจากท้ายเอกสารไปไว้ตรงตำแหน่ง {{ drug_details }} เดิม
+    # แล้วลบ paragraph ของ marker ทิ้งทั้งหมด เพื่อไม่ให้เลขลำดับ/list เช่น "1."
+    # ที่ติดมาจาก template ค้างอยู่เหนือรายการยา
+    marker_p = marker_paragraph._p
+    marker_p.addnext(table._tbl)
+    marker_p.getparent().remove(marker_p)
 
     output = io.BytesIO()
     doc.save(output)
