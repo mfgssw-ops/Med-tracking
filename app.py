@@ -4,6 +4,11 @@ import datetime
 import io
 import requests
 from docxtpl import DocxTemplate
+from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+
 
 # ==========================================
 # ⚠️ ตั้งค่า URL ที่ต้องใช้งาน 2 จุดที่นี่ค่ะ ⚠️
@@ -59,6 +64,91 @@ def drug_details_text(items, opd_mode=False):
                 f"{idx}. {item['drug_name']} จำนวน {format_qty(item['qty'])} {item['unit']}"
             )
     return "\n".join(lines)
+
+
+def _set_cell_text(cell, text, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT):
+    """ใส่ข้อความใน cell พร้อมฟอนต์ Sarabun สำหรับเอกสารราชการ"""
+    cell.text = ""
+    p = cell.paragraphs[0]
+    p.alignment = align
+    run = p.add_run(str(text))
+    run.bold = bold
+    run.font.name = "Sarabun"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Sarabun")
+
+
+def _hide_table_borders(table):
+    """ซ่อนเส้นตารางทั้งหมด แต่ยังคงโครงสร้างคอลัมน์ไว้"""
+    tblPr = table._tbl.tblPr
+    borders = tblPr.first_child_found_in("w:tblBorders")
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tblPr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        tag = f"w:{edge}"
+        element = borders.find(qn(tag))
+        if element is None:
+            element = OxmlElement(tag)
+            borders.append(element)
+        element.set(qn("w:val"), "nil")
+
+
+def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__DRUG_TABLE__"):
+    """แทน marker ใน Word ด้วยตารางไร้เส้นสำหรับรายการยา"""
+    docx_bytes.seek(0)
+    doc = Document(docx_bytes)
+
+    marker_paragraph = None
+    for paragraph in doc.paragraphs:
+        if marker in paragraph.text:
+            marker_paragraph = paragraph
+            break
+
+    # หาก template ไม่มี marker ให้คงเอกสารเดิมไว้เพื่อไม่ให้ระบบล้ม
+    if marker_paragraph is None:
+        output = io.BytesIO()
+        doc.save(output)
+        output.seek(0)
+        return output
+
+    # ลบเฉพาะ marker แต่คงข้อความอื่นใน paragraph เดิม (ถ้ามี)
+    for run in marker_paragraph.runs:
+        if marker in run.text:
+            run.text = run.text.replace(marker, "")
+
+    if opd_mode:
+        headers = ["ลำดับ", "รายการยา", "จ่ายผู้ป่วย 3 วัน", "จำนวนที่ รพ.ปลายทางต้องยืม"]
+        rows = [
+            [idx, item["drug_name"], f"{format_qty(item['qty_3day'])} {item['unit']}", f"{format_qty(item['borrow_qty'])} {item['unit']}"]
+            for idx, item in enumerate(items, start=1)
+        ]
+    else:
+        headers = ["ลำดับ", "รายการยา", "จำนวน"]
+        rows = [
+            [idx, item["drug_name"], f"{format_qty(item['qty'])} {item['unit']}"]
+            for idx, item in enumerate(items, start=1)
+        ]
+
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.autofit = True
+    _hide_table_borders(table)
+
+    for col, heading in enumerate(headers):
+        _set_cell_text(table.rows[0].cells[col], heading, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+
+    for row_values in rows:
+        cells = table.add_row().cells
+        for col, value in enumerate(row_values):
+            align = WD_ALIGN_PARAGRAPH.CENTER if col == 0 else WD_ALIGN_PARAGRAPH.LEFT
+            _set_cell_text(cells[col], value, align=align)
+
+    # ย้ายตารางจากท้ายเอกสารไปไว้ถัดจากตำแหน่ง {{ drug_details }} เดิม
+    marker_paragraph._p.addnext(table._tbl)
+
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output
 
 # --- ฟังก์ชันติดต่อ Google Sheets ---
 def get_from_google_sheets(sheet_name):
@@ -408,7 +498,8 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
                         'target_hospital': target_hosp,
                         'pt_name': pt_name,
                         'hn': hn,
-                        'drug_details': drug_details_text(refer_items, opd_mode=is_opd),
+                        # ใช้ marker ชั่วคราว แล้วแทนด้วยตารางไร้เส้นหลัง render
+                        'drug_details': '__DRUG_TABLE__',
                         'user_name': user_name,
                         'thai_date': get_thai_date(date_out),
                         # ตัวแปรเสริม ใช้ได้ทันทีหากเพิ่ม placeholder ใน template ภายหลัง
@@ -418,6 +509,7 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
                     doc_refer.render(context_refer)
                     bio_refer = io.BytesIO()
                     doc_refer.save(bio_refer)
+                    bio_refer = replace_drug_marker_with_table(bio_refer, refer_items, opd_mode=is_opd)
 
                     st.download_button(
                         label="📥 โหลดใบให้ยืมยา (ส่งตัวผู้ป่วย)",
