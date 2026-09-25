@@ -60,7 +60,7 @@ def drug_details_text(items, opd_mode=False):
     for idx, item in enumerate(items, start=1):
         if opd_mode:
             lines.append(
-                f"{idx}. {item['drug_name']} - จ่าย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
+                f"{idx}. {item['drug_name']} - จ่ายให้ผู้ป่วย 3 วัน {format_qty(item['qty_3day'])} {item['unit']} "
                 f"/ รพ.ปลายทางทำเรื่องยืม {format_qty(item['borrow_qty'])} {item['unit']}"
             )
         else:
@@ -135,7 +135,7 @@ def replace_drug_marker_with_table(docx_bytes, items, opd_mode=False, marker="__
     if opd_mode:
         # คอลัมน์สุดท้ายช่วยตรวจสอบได้ทันทีว่า 3 วันที่ รพ.เราจ่าย + ส่วนที่ รพ.ปลายทางยืม
         # รวมแล้วตรงกับจำนวนยาที่ผู้ป่วยต้องใช้ทั้งหมดหรือไม่
-        headers = ["ลำดับ", "รายการยา", "จ่าย 3 วัน", "ทำเรื่องขอยืม", "รวมจ่าย"]
+        headers = ["ลำดับ", "รายการยา", "จ่ายผู้ป่วย\n3 วัน", "รพ.ปลายทาง\nขอยืม", "รวมที่ต้องใช้"]
         rows = []
         for idx, item in enumerate(items, start=1):
             qty_3day = float(item["qty_3day"])
@@ -337,8 +337,29 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
     
-    html, body, [class*="css"], [class*="st-"], h1, h2, h3, h4, h5, h6, span, label {
+    /* ใช้ Sarabun กับข้อความทั่วไป แต่ไม่บังคับกับ <span> ทุกตัว
+       เพราะ Streamlit ใช้ Material Symbols ผ่าน span สำหรับไอคอน
+       ถ้าบังคับ font-family กับ span จะเห็นคำว่า arrow_right / keyboard_double... ซ้อนกับข้อความ */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"],
+    h1, h2, h3, h4, h5, h6, p, label, input, textarea, button, select {
         font-family: 'Sarabun', sans-serif !important;
+    }
+
+    /* คืนฟอนต์ไอคอนของ Streamlit ให้ Material Symbols */
+    .material-symbols-rounded {
+        font-family: 'Material Symbols Rounded' !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+    }
+    .material-symbols-outlined {
+        font-family: 'Material Symbols Outlined' !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+    }
+    [data-testid="stIconMaterial"] {
+        font-family: 'Material Symbols Rounded' !important;
+        font-weight: normal !important;
+        font-style: normal !important;
     }
     
     #MainMenu {visibility: hidden;} 
@@ -455,6 +476,7 @@ if login_mode == "🛠️ System Admin":
         system_admin_password = st.sidebar.text_input(
             "รหัส System Admin",
             type="password",
+            autocomplete="off",
             key="system_admin_password_input",
         )
         if st.sidebar.button("🔓 เข้าสู่ System Admin", key="system_admin_login_btn"):
@@ -558,12 +580,14 @@ if user_role == "warehouse":
         new_password = st.sidebar.text_input(
             "ตั้งรหัสผ่านใหม่",
             type="password",
+            autocomplete="off",
             key=f"setup_password::{user_name}",
             help="อย่างน้อย 6 ตัวอักษร",
         )
         confirm_password = st.sidebar.text_input(
             "ยืนยันรหัสผ่านใหม่",
             type="password",
+            autocomplete="off",
             key=f"setup_password_confirm::{user_name}",
         )
 
@@ -592,6 +616,7 @@ if user_role == "warehouse":
         admin_password = st.sidebar.text_input(
             "รหัสผ่านส่วนตัว",
             type="password",
+            autocomplete="off",
             key=f"login_password::{user_name}",
         )
         if st.sidebar.button("🔓 เข้าสู่ระบบ", key=f"login_btn::{user_name}"):
@@ -610,17 +635,20 @@ if user_role == "warehouse":
         current_password = st.text_input(
             "รหัสผ่านปัจจุบัน",
             type="password",
+            autocomplete="off",
             key=f"change_current::{user_name}",
         )
         changed_password = st.text_input(
             "รหัสผ่านใหม่",
             type="password",
+            autocomplete="off",
             key=f"change_new::{user_name}",
             help="อย่างน้อย 6 ตัวอักษร",
         )
         changed_password_confirm = st.text_input(
             "ยืนยันรหัสผ่านใหม่",
             type="password",
+            autocomplete="off",
             key=f"change_confirm::{user_name}",
         )
         if st.button("บันทึกรหัสผ่านใหม่", key=f"change_btn::{user_name}"):
@@ -717,11 +745,11 @@ if menu == "1. จ่ายยาออก (Refer รพช.)":
             drug_name = st.text_input("ชื่อยา หรือ เวชภัณฑ์", key="refer_drug_name_input")
         with col_d2:
             qty_3day = st.number_input(
-                "จ่ายผู้ป่วย 3 วัน", min_value=0.0, step=1.0, key="refer_qty_3day_input"
+                "จ่าย 3 วัน", min_value=0.0, step=1.0, key="refer_qty_3day_input"
             )
         with col_d3:
             borrow_qty = st.number_input(
-                "ส่วนที่ รพ.ปลายทางต้องยืม", min_value=0.0, step=1.0, key="refer_borrow_qty_input"
+                "รพ.ปลายทางยืม", min_value=0.0, step=1.0, key="refer_borrow_qty_input"
             )
         with col_d4:
             unit_choice = st.selectbox("หน่วย", UNITS, key="refer_unit_choice_input")
